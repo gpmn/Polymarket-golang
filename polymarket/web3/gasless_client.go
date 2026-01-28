@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -446,13 +447,28 @@ func (c *PolymarketGaslessWeb3Client) submitToRelay(body *RelaySubmitRequest, he
 }
 
 // waitForReceipt 等待交易回执
+// 添加轮询间隔和超时机制，避免 RPC 429 限流
 func (c *PolymarketGaslessWeb3Client) waitForReceipt(txHash common.Hash) (*TransactionReceipt, error) {
+	const (
+		pollInterval = 4 * time.Second // 轮询间隔
+		timeout      = 5 * time.Minute // 总超时时间
+	)
+
+	deadline := time.Now().Add(timeout)
+
 	for {
 		receipt, err := c.client.TransactionReceipt(context.Background(), txHash)
 		if err == nil {
 			return FromEthReceipt(receipt, c.account), nil
 		}
-		// 继续等待...
+
+		// 检查是否超时
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout waiting for transaction receipt: %s", txHash.Hex())
+		}
+
+		// 等待后重试
+		time.Sleep(pollInterval)
 	}
 }
 

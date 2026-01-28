@@ -441,6 +441,15 @@ polymarket/
 
 ## 更新日志
 
+### v0.2.6 (2026-01-28)
+
+#### Bug 修复
+
+- **修复 RPC 429 限流错误** - `waitForReceipt` 现在包含正确的轮询间隔和超时机制
+  - 添加 4 秒轮询间隔
+  - 添加 5 分钟超时限制
+  - 同时适用于 `PolymarketWeb3Client` 和 `PolymarketGaslessWeb3Client`
+
 ### v0.2.5 (2026-01-24)
 
 #### 新功能

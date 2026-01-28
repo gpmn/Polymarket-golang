@@ -441,6 +441,15 @@ The example programs use the following environment variables:
 
 ## Changelog
 
+### v0.2.6 (2026-01-28)
+
+#### Bug Fixes
+
+- **Fixed RPC 429 Rate Limit Error** - `waitForReceipt` now includes proper polling interval and timeout
+  - Added 4-second polling interval between RPC calls
+  - Added 5-minute timeout to prevent infinite waiting
+  - Applies to both `PolymarketWeb3Client` and `PolymarketGaslessWeb3Client`
+
 ### v0.2.5 (2026-01-24)
 
 #### New Features
