@@ -8,6 +8,10 @@
 # Test binary
 *.test
 
+# Compiled binaries (Go)
+check_positions
+ethcall_probe
+
 # Output of the go coverage tool
 *.out
 
