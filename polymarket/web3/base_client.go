@@ -178,25 +178,32 @@ func (c *BaseWeb3Client) setupAddress() error {
 	return nil
 }
 
-// callContract 通过 eth_call 调用合约，使用 blockOverrides 将 baseFeePerGas 设为 0。
-// Polygon Bor v2.6.0 升级后，节点的 setDefaults 会注入冲突的 gas 字段，
-// 导致 "both gasPrice and maxFeePerGas specified" 或 baseFee 校验失败。
-// 使用 eth_call 的第 4 个参数 blockOverrides 将 baseFeePerGas 覆盖为 0，
-// 这样即使节点注入了低默认值的 maxFeePerGas，也能通过 baseFee >= maxFeePerGas 校验。
+// defaultCallGasPrice 用于 eth_call 的 gas 价格。
+// Polygon Bor v2.6.0 升级后，节点会为 eth_call 填充极低的默认 maxFeePerGas（50 Mwei），
+// 低于实际 baseFee（~100+ Gwei），导致 baseFee 校验失败。
+// 设置一个足够高的 gasPrice 值，确保节点在 legacy 模式下通过 baseFee 校验。
+// 此值仅用于只读 eth_call，不影响实际交易的 gas 费用。
+var defaultCallGasPrice = big.NewInt(1e15) // 1000 Gwei - 足够高，确保通过任何 baseFee 校验
+
+// callContract 通过 eth_call 调用合约。
+// 使用 raw rpc.Client 而非 ethclient.CallContract，避免 ethclient 自动添加
+// from: 0x000... 字段（该字段可能触发 Bor 节点注入冲突的 gasPrice）。
+// 仅发送 to、data 和 gasPrice，不发送 EIP-1559 字段和 from，以兼容 Bor v2.6.0。
 func (c *BaseWeb3Client) callContract(ctx context.Context, to *common.Address, data []byte) ([]byte, error) {
 	type ethCallArgs struct {
-		To   *common.Address `json:"to"`
-		Data hexutil.Bytes   `json:"data"`
-	}
-	type blockOverrides struct {
-		BaseFeePerGas *hexutil.Big `json:"baseFeePerGas"`
+		To       *common.Address `json:"to"`
+		Data     hexutil.Bytes   `json:"data"`
+		GasPrice *hexutil.Big    `json:"gasPrice"`
 	}
 
-	args := ethCallArgs{To: to, Data: data}
-	overrides := blockOverrides{BaseFeePerGas: (*hexutil.Big)(new(big.Int))}
+	args := ethCallArgs{
+		To:       to,
+		Data:     data,
+		GasPrice: (*hexutil.Big)(defaultCallGasPrice),
+	}
 
 	var result hexutil.Bytes
-	err := c.rpcClient.CallContext(ctx, &result, "eth_call", args, "latest", nil, overrides)
+	err := c.rpcClient.CallContext(ctx, &result, "eth_call", args, "latest")
 	if err != nil {
 		return nil, err
 	}

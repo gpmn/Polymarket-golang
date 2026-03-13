@@ -13,11 +13,13 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-// TestCallContractBlockOverrides 验证 callContract 发送正确的 eth_call 参数：
-// 1. 不包含任何 gas 字段（gas, gasPrice, maxFeePerGas, maxPriorityFeePerGas）
-// 2. 包含 blockOverrides 第 4 参数，其中 baseFeePerGas = "0x0"
-// 3. 正确返回合约调用结果
-func TestCallContractBlockOverrides(t *testing.T) {
+// TestCallContractGasPrice 验证 callContract 发送正确的 eth_call 参数：
+// 1. 包含 gasPrice（高值，用于通过 baseFee 校验）
+// 2. 不包含 from 字段（避免 Bor 节点注入冲突的 gasPrice）
+// 3. 不包含 EIP-1559 字段（maxFeePerGas, maxPriorityFeePerGas）
+// 4. 只发送 2 个参数（args + blockTag），不发送 blockOverrides
+// 5. 正确返回合约调用结果
+func TestCallContractGasPrice(t *testing.T) {
 	var capturedBody []byte
 
 	// 模拟 RPC 服务器，返回一个固定的 32 字节结果
@@ -67,27 +69,45 @@ func TestCallContractBlockOverrides(t *testing.T) {
 		t.Errorf("expected method eth_call, got %s", req.Method)
 	}
 
-	// 验证参数数量：args, blockTag, stateOverrides(null), blockOverrides
-	if len(req.Params) != 4 {
-		t.Fatalf("expected 4 params, got %d", len(req.Params))
+	// 验证参数数量：只有 args + blockTag（2 个参数）
+	if len(req.Params) != 2 {
+		t.Fatalf("expected 2 params, got %d", len(req.Params))
 	}
 
-	// 验证第 1 个参数（交易参数）：只包含 to 和 data，不含 gas 字段
+	// 验证第 1 个参数（交易参数）
 	var args map[string]interface{}
 	if err := json.Unmarshal(req.Params[0], &args); err != nil {
 		t.Fatalf("failed to parse call args: %v", err)
 	}
 
+	// 必须包含 to、data、gasPrice
 	if _, ok := args["to"]; !ok {
 		t.Error("call args missing 'to' field")
 	}
 	if _, ok := args["data"]; !ok {
 		t.Error("call args missing 'data' field")
 	}
+	if _, ok := args["gasPrice"]; !ok {
+		t.Error("call args missing 'gasPrice' field")
+	}
 
-	// 确保没有 gas 相关字段
-	gasFields := []string{"gas", "gasPrice", "maxFeePerGas", "maxPriorityFeePerGas", "gasFeeCap", "gasTipCap"}
-	for _, field := range gasFields {
+	// gasPrice 应该是 1000 Gwei = 1e15 = "0x38d7ea4c68000"
+	gasPrice, ok := args["gasPrice"].(string)
+	if !ok {
+		t.Fatal("gasPrice should be a hex string")
+	}
+	if gasPrice != "0x38d7ea4c68000" {
+		t.Errorf("expected gasPrice '0x38d7ea4c68000' (1000 Gwei), got '%s'", gasPrice)
+	}
+
+	// 不能包含 from 字段（避免 Bor 注入 gasPrice 冲突）
+	if _, ok := args["from"]; ok {
+		t.Error("call args should NOT contain 'from' field")
+	}
+
+	// 不能包含 EIP-1559 字段
+	eip1559Fields := []string{"maxFeePerGas", "maxPriorityFeePerGas"}
+	for _, field := range eip1559Fields {
 		if _, ok := args[field]; ok {
 			t.Errorf("call args should NOT contain '%s' field, but it does", field)
 		}
@@ -100,25 +120,6 @@ func TestCallContractBlockOverrides(t *testing.T) {
 	}
 	if blockTag != "latest" {
 		t.Errorf("expected block tag 'latest', got '%s'", blockTag)
-	}
-
-	// 验证第 3 个参数：state overrides = null
-	if string(req.Params[2]) != "null" {
-		t.Errorf("expected state overrides to be null, got %s", string(req.Params[2]))
-	}
-
-	// 验证第 4 个参数：block overrides 包含 baseFeePerGas = "0x0"
-	var blockOverrides map[string]interface{}
-	if err := json.Unmarshal(req.Params[3], &blockOverrides); err != nil {
-		t.Fatalf("failed to parse block overrides: %v", err)
-	}
-
-	baseFee, ok := blockOverrides["baseFeePerGas"]
-	if !ok {
-		t.Fatal("block overrides missing 'baseFeePerGas' field")
-	}
-	if baseFee != "0x0" {
-		t.Errorf("expected baseFeePerGas '0x0', got '%v'", baseFee)
 	}
 }
 
