@@ -71,11 +71,9 @@ func (c *PolymarketWeb3Client) buildEOATransaction(to common.Address, data []byt
 
 	// 估算gas
 	gas, err := c.client.EstimateGas(context.Background(), ethereum.CallMsg{
-		From:      c.Address,
-		To:        &to,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
+		From: c.Address,
+		To:   &to,
+		Data: data,
 	})
 	if err != nil {
 		gas = 500000 // 默认值
@@ -124,11 +122,9 @@ func (c *PolymarketWeb3Client) buildProxyTransaction(to common.Address, data []b
 
 	// 估算gas
 	gas, err := c.client.EstimateGas(context.Background(), ethereum.CallMsg{
-		From:      c.Address,
-		To:        &to,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
+		From: c.Address,
+		To:   &to,
+		Data: data,
 	})
 	if err != nil {
 		gas = 500000
@@ -167,12 +163,7 @@ func (c *PolymarketWeb3Client) buildSafeTransaction(to common.Address, data []by
 		return nil, fmt.Errorf("failed to pack nonce call: %w", err)
 	}
 
-	result, err := c.client.CallContract(context.Background(), ethereum.CallMsg{
-		To:        &c.Address,
-		Data:      safeNonceData,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
-	}, nil)
+	result, err := c.callContract(context.Background(), &c.Address, safeNonceData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get safe nonce: %w", err)
 	}
@@ -204,11 +195,9 @@ func (c *PolymarketWeb3Client) buildSafeTransaction(to common.Address, data []by
 
 	// 估算gas
 	gas, err := c.client.EstimateGas(context.Background(), ethereum.CallMsg{
-		From:      c.Address,
-		To:        &to,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
+		From: c.Address,
+		To:   &to,
+		Data: data,
 	})
 	if err != nil {
 		gas = 500000
@@ -262,12 +251,7 @@ func (c *PolymarketWeb3Client) getSafeTransactionHash(to common.Address, data []
 		return nil, err
 	}
 
-	result, err := c.client.CallContract(context.Background(), ethereum.CallMsg{
-		To:        &c.Address,
-		Data:      txHashData,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
-	}, nil)
+	result, err := c.callContract(context.Background(), &c.Address, txHashData)
 	if err != nil {
 		return nil, err
 	}
@@ -627,11 +611,9 @@ func (c *PolymarketWeb3Client) buildBatchProxyTransaction(calls []ProxyCall) (*t
 
 	// 估算gas
 	gas, err := c.client.EstimateGas(context.Background(), ethereum.CallMsg{
-		From:      c.account,
-		To:        &c.ProxyFactoryAddress,
-		Data:      proxyData,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
+		From: c.account,
+		To:   &c.ProxyFactoryAddress,
+		Data: proxyData,
 	})
 	if err != nil {
 		gas = 15000000 // 默认大的 gas limit

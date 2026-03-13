@@ -445,12 +445,12 @@ The example programs use the following environment variables:
 
 #### Bug Fixes
 
-- **Fixed Polygon Bor v2.6.0 `eth_call` Compatibility** - All `CallMsg` now explicitly set `GasFeeCap` and `GasTipCap` to bypass the new baseFee validation
+- **Fixed Polygon Bor v2.6.0 `eth_call` Compatibility** - Use raw `eth_call` RPC with `blockOverrides` (`baseFeePerGas: 0`) to bypass baseFee validation
   - Bor v2.6.0 ([announcement](https://forum.polygon.technology/t/bor-v2-6-0-and-erigon-v3-4-0-for-mainnet-and-amoy/21757)) synced upstream go-ethereum's `eth_call` validation logic; nodes now reject calls where `maxFeePerGas` is lower than `baseFee`
-  - Previously, `CallMsg` omitted gas fee fields, causing the node's `CallDefaults` to fill an extremely low default `maxFeePerGas` (0.05 Gwei), which fails against the actual baseFee (~100 Gwei)
-  - Fix: explicitly set both `GasFeeCap` and `GasTipCap` to zero in all `ethereum.CallMsg`. When both are zero, the EVM's `skipCheck` logic (`NoBaseFee && GasFeeCap==0 && GasTipCap==0`) bypasses baseFee validation entirely for `eth_call`
-  - Setting only `GasFeeCap` causes "both gasPrice and maxFeePerGas specified" conflicts; setting only `GasPrice` is ignored by Bor's `CallDefaults`; both fields must be explicitly set
-  - This only affects `eth_call` and `estimateGas` (read-only, no actual fees); real transaction gas price remains unchanged
+  - The Bor node's `setDefaults` injects conflicting gas fields, making it impossible to fix via `CallMsg` gas parameters alone (setting `GasFeeCap`/`GasTipCap` causes "both gasPrice and maxFeePerGas specified"; setting `GasPrice` is ignored)
+  - Fix: replace all `ethclient.CallContract` with raw `rpc.Client.CallContext` `eth_call`, using the 4th parameter `blockOverrides: {"baseFeePerGas": "0x0"}` to set block context's baseFee to 0 before gas validation
+  - For `estimateGas`, gas fields are removed; all call sites have fallback gas limits
+  - This only affects read-only contract calls; real transaction gas price remains unchanged
   - Affects all Polygon RPC providers, not provider-specific
 
 ### v0.2.6 (2026-01-28)

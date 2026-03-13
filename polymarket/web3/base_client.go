@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // 常量地址
@@ -26,20 +27,6 @@ var (
 
 	// 默认 RPC 端点
 	DefaultPolygonRPC = "https://polygon-rpc.com"
-)
-
-// callGasFeeCap 和 callGasTipCap 用于 eth_call/estimateGas。
-// Polygon Bor v2.6.0 升级后，节点的 CallDefaults 在 baseFee 存在时，
-// 会为未设置的 maxFeePerGas/maxPriorityFeePerGas 填入极低的默认值，导致 baseFee 校验失败。
-//
-// 解决方案：同时显式设置 GasFeeCap 和 GasTipCap 为 0。
-// 当两者都为 0 时，EVM 的 state_transition 会触发 skipCheck：
-//   skipCheck := st.evm.Config.NoBaseFee && msg.GasFeeCap.BitLen() == 0 && msg.GasTipCap.BitLen() == 0
-// eth_call 的 NoBaseFee=true，所以 skipCheck=true，完全跳过 baseFee 校验。
-// 关键：必须同时设置两个字段（非 nil），否则节点会填入自己的默认值。
-var (
-	callGasFeeCap = new(big.Int) // 0 - 显式设置，阻止节点填默认值
-	callGasTipCap = new(big.Int) // 0 - 显式设置，阻止节点填默认值
 )
 
 // ChainConfig 链配置
@@ -71,8 +58,10 @@ var chainConfigs = map[int64]*ChainConfig{
 
 // BaseWeb3Client Web3 基础客户端
 type BaseWeb3Client struct {
-	client        *ethclient.Client
-	privateKey    *ecdsa.PrivateKey
+	client    *ethclient.Client
+	rpcClient *rpc.Client
+
+	privateKey *ecdsa.PrivateKey
 	account       common.Address
 	signatureType SignatureType
 	chainID       int64
@@ -103,11 +92,12 @@ func NewBaseWeb3Client(
 		rpcURL = DefaultPolygonRPC
 	}
 
-	// 连接到以太坊客户端
-	client, err := ethclient.Dial(rpcURL)
+	// 连接到以太坊客户端（使用 rpc.Client 以支持 eth_call blockOverrides）
+	rpcClient, err := rpc.Dial(rpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to Ethereum client: %w", err)
 	}
+	client := ethclient.NewClient(rpcClient)
 
 	// 解析私钥
 	privKey, err := crypto.HexToECDSA(stripHexPrefix(privateKey))
@@ -139,8 +129,9 @@ func NewBaseWeb3Client(
 	}
 
 	c := &BaseWeb3Client{
-		client:        client,
-		privateKey:    privKey,
+		client:     client,
+		rpcClient:  rpcClient,
+		privateKey: privKey,
 		account:       account,
 		signatureType: signatureType,
 		chainID:       chainID,
@@ -187,6 +178,31 @@ func (c *BaseWeb3Client) setupAddress() error {
 	return nil
 }
 
+// callContract 通过 eth_call 调用合约，使用 blockOverrides 将 baseFeePerGas 设为 0。
+// Polygon Bor v2.6.0 升级后，节点的 setDefaults 会注入冲突的 gas 字段，
+// 导致 "both gasPrice and maxFeePerGas specified" 或 baseFee 校验失败。
+// 使用 eth_call 的第 4 个参数 blockOverrides 将 baseFeePerGas 覆盖为 0，
+// 这样即使节点注入了低默认值的 maxFeePerGas，也能通过 baseFee >= maxFeePerGas 校验。
+func (c *BaseWeb3Client) callContract(ctx context.Context, to *common.Address, data []byte) ([]byte, error) {
+	type ethCallArgs struct {
+		To   *common.Address `json:"to"`
+		Data hexutil.Bytes   `json:"data"`
+	}
+	type blockOverrides struct {
+		BaseFeePerGas *hexutil.Big `json:"baseFeePerGas"`
+	}
+
+	args := ethCallArgs{To: to, Data: data}
+	overrides := blockOverrides{BaseFeePerGas: (*hexutil.Big)(new(big.Int))}
+
+	var result hexutil.Bytes
+	err := c.rpcClient.CallContext(ctx, &result, "eth_call", args, "latest", nil, overrides)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // GetBaseAddress 获取基础 EOA 地址
 func (c *BaseWeb3Client) GetBaseAddress() common.Address {
 	return c.account
@@ -200,14 +216,7 @@ func (c *BaseWeb3Client) GetPolyProxyAddress(address common.Address) (common.Add
 		return common.Address{}, fmt.Errorf("failed to pack call data: %w", err)
 	}
 
-	msg := ethereum.CallMsg{
-		To:        &c.ExchangeAddress,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
-	}
-
-	result, err := c.client.CallContract(context.Background(), msg, nil)
+	result, err := c.callContract(context.Background(), &c.ExchangeAddress, data)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to call contract: %w", err)
 	}
@@ -229,14 +238,7 @@ func (c *BaseWeb3Client) GetSafeProxyAddress(address common.Address) (common.Add
 		return common.Address{}, fmt.Errorf("failed to pack call data: %w", err)
 	}
 
-	msg := ethereum.CallMsg{
-		To:        &c.SafeProxyFactoryAddress,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
-	}
-
-	result, err := c.client.CallContract(context.Background(), msg, nil)
+	result, err := c.callContract(context.Background(), &c.SafeProxyFactoryAddress, data)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to call contract: %w", err)
 	}
@@ -277,14 +279,7 @@ func (c *BaseWeb3Client) GetUSDCBalance(address common.Address) (*big.Float, err
 		return nil, fmt.Errorf("failed to pack call data: %w", err)
 	}
 
-	msg := ethereum.CallMsg{
-		To:        &c.USDCAddress,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
-	}
-
-	result, err := c.client.CallContract(context.Background(), msg, nil)
+	result, err := c.callContract(context.Background(), &c.USDCAddress, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call contract: %w", err)
 	}
@@ -318,14 +313,7 @@ func (c *BaseWeb3Client) GetTokenBalance(tokenID string, address common.Address)
 		return nil, fmt.Errorf("failed to pack call data: %w", err)
 	}
 
-	msg := ethereum.CallMsg{
-		To:        &c.ConditionalTokensAddress,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
-	}
-
-	result, err := c.client.CallContract(context.Background(), msg, nil)
+	result, err := c.callContract(context.Background(), &c.ConditionalTokensAddress, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call contract: %w", err)
 	}
@@ -355,14 +343,7 @@ func (c *BaseWeb3Client) GetTokenComplement(tokenID string) (string, error) {
 		return "", fmt.Errorf("failed to pack call data: %w", err)
 	}
 
-	msg := ethereum.CallMsg{
-		To:        &c.NegRiskExchangeAddress,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
-	}
-
-	result, err := c.client.CallContract(context.Background(), msg, nil)
+	result, err := c.callContract(context.Background(), &c.NegRiskExchangeAddress, data)
 	if err == nil && len(result) > 0 {
 		var complement *big.Int
 		err = NegRiskExchangeABI.UnpackIntoInterface(&complement, "getComplement", result)
@@ -377,14 +358,7 @@ func (c *BaseWeb3Client) GetTokenComplement(tokenID string) (string, error) {
 		return "", fmt.Errorf("failed to pack call data: %w", err)
 	}
 
-	msg = ethereum.CallMsg{
-		To:        &c.ExchangeAddress,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
-	}
-
-	result, err = c.client.CallContract(context.Background(), msg, nil)
+	result, err = c.callContract(context.Background(), &c.ExchangeAddress, data)
 	if err != nil {
 		return "", fmt.Errorf("failed to call contract: %w", err)
 	}
@@ -406,14 +380,7 @@ func (c *BaseWeb3Client) GetConditionIDNegRisk(questionID common.Hash) (common.H
 		return common.Hash{}, fmt.Errorf("failed to pack call data: %w", err)
 	}
 
-	msg := ethereum.CallMsg{
-		To:        &c.NegRiskAdapterAddress,
-		Data:      data,
-		GasFeeCap: callGasFeeCap,
-		GasTipCap: callGasTipCap,
-	}
-
-	result, err := c.client.CallContract(context.Background(), msg, nil)
+	result, err := c.callContract(context.Background(), &c.NegRiskAdapterAddress, data)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("failed to call contract: %w", err)
 	}
