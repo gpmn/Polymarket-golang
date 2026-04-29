@@ -93,7 +93,7 @@ func OrderToJSONV2(order *SignedOrderV2, owner string, orderType OrderType, post
 	}
 
 	orderDict := map[string]interface{}{
-		"salt":          saltStr,
+		"salt":          parseBigIntOrZero(saltStr),
 		"maker":         common.HexToAddress(order.Maker).Hex(),
 		"signer":        common.HexToAddress(order.Signer).Hex(),
 		"tokenId":       order.TokenId,

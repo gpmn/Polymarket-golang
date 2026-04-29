@@ -13,7 +13,7 @@ type HTTPClientInterface interface {
 
 // SignedOrderData 签名订单数据（用于避免循环导入, v2 format）
 type SignedOrderData struct {
-	Salt          string `json:"salt"`
+	Salt          int64  `json:"salt"`
 	Maker         string `json:"maker"`
 	Signer        string `json:"signer"`
 	TokenID       string `json:"tokenId"`

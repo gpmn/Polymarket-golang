@@ -357,11 +357,12 @@ func CurrentTimestampMs() string {
 	return strconv.FormatInt(time.Now().UnixMilli(), 10)
 }
 
-// GenerateSalt returns a random salt as a string.
+// GenerateSalt returns a random salt as a decimal string (int64-safe, matches JS SDK).
 func GenerateSalt() string {
-	salt := crypto.Keccak256Hash(
-		[]byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Nanosecond())),
-	)
-	saltBig := new(big.Int).SetBytes(salt[:16]) // use first 16 bytes as entropy
-	return saltBig.String()
+	ms := time.Now().UnixMilli()
+	salt := int64(float64(ms) * (float64(time.Now().Nanosecond()%1000000) / 1e6))
+	if salt < 1 {
+		salt = ms
+	}
+	return strconv.FormatInt(salt, 10)
 }
