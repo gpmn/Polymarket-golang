@@ -5,27 +5,35 @@ import (
 	"fmt"
 )
 
-// PostOrder 提交订单
-// 需要L2认证
-// 返回 PostOrderResult，包含原始 Payload 和 API 响应
-func (c *ClobClient) PostOrder(order *SignedOrder, orderType OrderType) (*PostOrderResult, error) {
-	return c.PostOrderWithOptions(order, orderType, false)
+// PostOrder submits an order (v1 or v2).
+func (c *ClobClient) PostOrder(order interface{}, orderType OrderType) (*PostOrderResult, error) {
+	return c.PostOrderWithOptions(order, orderType, false, false)
 }
 
-// PostOrderWithOptions 提交订单（支持 PostOnly 选项）
-// postOnly 订单只能是 GTC 或 GTD 类型
-// 需要L2认证
-// 返回 PostOrderResult，包含原始 Payload 和 API 响应
-func (c *ClobClient) PostOrderWithOptions(order *SignedOrder, orderType OrderType, postOnly bool) (*PostOrderResult, error) {
+// PostOrderWithOptions submits an order with post_only and defer_exec options.
+func (c *ClobClient) PostOrderWithOptions(order interface{}, orderType OrderType, postOnly bool, deferExec bool) (*PostOrderResult, error) {
 	if postOnly && orderType != OrderTypeGTC && orderType != OrderTypeGTD {
 		return nil, fmt.Errorf("post_only orders can only be of type GTC or GTD")
 	}
-
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
-	body := OrderToJSONWithPostOnly(order, c.creds.APIKey, orderType, postOnly)
+	owner := ""
+	if c.creds != nil {
+		owner = c.creds.APIKey
+	}
+
+	var body map[string]interface{}
+	switch o := order.(type) {
+	case *SignedOrderV2:
+		body = OrderToJSONV2(o, owner, orderType, postOnly, deferExec)
+	case *SignedOrder:
+		body = OrderToJSONV1(o, owner, orderType, postOnly)
+	default:
+		return nil, fmt.Errorf("unsupported order type: %T", order)
+	}
+
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal order: %w", err)
@@ -33,9 +41,9 @@ func (c *ClobClient) PostOrderWithOptions(order *SignedOrder, orderType OrderTyp
 	bodyStr := string(bodyJSON)
 
 	requestArgs := &RequestArgs{
-		Method:        "POST",
-		RequestPath:   PostOrder,
-		Body:          body,
+		Method:         "POST",
+		RequestPath:    PostOrder,
+		Body:           body,
 		SerializedBody: &bodyStr,
 	}
 
@@ -49,30 +57,33 @@ func (c *ClobClient) PostOrderWithOptions(order *SignedOrder, orderType OrderTyp
 		return nil, err
 	}
 
-	return &PostOrderResult{
-		Payload:  body,
-		Response: resp,
-	}, nil
+	return &PostOrderResult{Payload: body, Response: resp}, nil
 }
 
-// PostOrders 批量提交订单
-// 需要L2认证
-// 返回 PostOrdersResult，包含原始 Payload 和 API 响应
-func (c *ClobClient) PostOrders(args []PostOrdersArgs) (*PostOrdersResult, error) {
+// PostOrders batch submits orders.
+func (c *ClobClient) PostOrders(args []PostOrderArgs) (*PostOrdersResult, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
-	// 验证 PostOnly 订单类型
-	for _, arg := range args {
-		if arg.PostOnly && arg.OrderType != OrderTypeGTC && arg.OrderType != OrderTypeGTD {
-			return nil, fmt.Errorf("post_only orders can only be of type GTC or GTD")
-		}
+	owner := ""
+	if c.creds != nil {
+		owner = c.creds.APIKey
 	}
 
 	body := make([]map[string]interface{}, len(args))
 	for i, arg := range args {
-		body[i] = OrderToJSONWithPostOnly(arg.Order, c.creds.APIKey, arg.OrderType, arg.PostOnly)
+		if arg.PostOnly && arg.OrderType != OrderTypeGTC && arg.OrderType != OrderTypeGTD {
+			return nil, fmt.Errorf("post_only orders can only be of type GTC or GTD")
+		}
+		switch o := arg.Order.(type) {
+		case *SignedOrderV2:
+			body[i] = OrderToJSONV2(o, owner, arg.OrderType, arg.PostOnly, arg.DeferExec)
+		case *SignedOrder:
+			body[i] = OrderToJSONV1(o, owner, arg.OrderType, arg.PostOnly)
+		default:
+			return nil, fmt.Errorf("unsupported order type: %T", arg.Order)
+		}
 	}
 
 	bodyJSON, err := json.Marshal(body)
@@ -82,9 +93,9 @@ func (c *ClobClient) PostOrders(args []PostOrdersArgs) (*PostOrdersResult, error
 	bodyStr := string(bodyJSON)
 
 	requestArgs := &RequestArgs{
-		Method:        "POST",
-		RequestPath:   PostOrders,
-		Body:          body,
+		Method:         "POST",
+		RequestPath:    PostOrders,
+		Body:           body,
 		SerializedBody: &bodyStr,
 	}
 
@@ -98,14 +109,10 @@ func (c *ClobClient) PostOrders(args []PostOrdersArgs) (*PostOrdersResult, error
 		return nil, err
 	}
 
-	return &PostOrdersResult{
-		Payload:  body,
-		Response: resp,
-	}, nil
+	return &PostOrdersResult{Payload: body, Response: resp}, nil
 }
 
-// Cancel 取消订单
-// 需要L2认证
+// Cancel cancels an order by orderID.
 func (c *ClobClient) Cancel(orderID string) (interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
@@ -119,9 +126,9 @@ func (c *ClobClient) Cancel(orderID string) (interface{}, error) {
 	bodyStr := string(bodyJSON)
 
 	requestArgs := &RequestArgs{
-		Method:        "DELETE",
-		RequestPath:   Cancel,
-		Body:          body,
+		Method:         "DELETE",
+		RequestPath:    Cancel,
+		Body:           body,
 		SerializedBody: &bodyStr,
 	}
 
@@ -133,23 +140,22 @@ func (c *ClobClient) Cancel(orderID string) (interface{}, error) {
 	return c.httpClient.Delete(Cancel, headers, bodyStr)
 }
 
-// CancelOrders 批量取消订单
-// 需要L2认证
-func (c *ClobClient) CancelOrders(orderIDs []string) (interface{}, error) {
+// CancelOrders cancels multiple orders by order hashes.
+func (c *ClobClient) CancelOrders(orderHashes []string) (interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
-	bodyJSON, err := json.Marshal(orderIDs)
+	bodyJSON, err := json.Marshal(orderHashes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal order IDs: %w", err)
+		return nil, fmt.Errorf("failed to marshal order hashes: %w", err)
 	}
 	bodyStr := string(bodyJSON)
 
 	requestArgs := &RequestArgs{
-		Method:        "DELETE",
-		RequestPath:   CancelOrders,
-		Body:          orderIDs,
+		Method:         "DELETE",
+		RequestPath:    CancelOrders,
+		Body:           orderHashes,
 		SerializedBody: &bodyStr,
 	}
 
@@ -161,18 +167,13 @@ func (c *ClobClient) CancelOrders(orderIDs []string) (interface{}, error) {
 	return c.httpClient.Delete(CancelOrders, headers, bodyStr)
 }
 
-// CancelAll 取消所有订单
-// 需要L2认证
+// CancelAll cancels all open orders.
 func (c *ClobClient) CancelAll() (interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
-	requestArgs := &RequestArgs{
-		Method:      "DELETE",
-		RequestPath: CancelAll,
-	}
-
+	requestArgs := &RequestArgs{Method: "DELETE", RequestPath: CancelAll}
 	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
 	if err != nil {
 		return nil, err
@@ -181,17 +182,20 @@ func (c *ClobClient) CancelAll() (interface{}, error) {
 	return c.httpClient.Delete(CancelAll, headers, nil)
 }
 
-// CancelMarketOrders 取消市场订单
-// 需要L2认证
-func (c *ClobClient) CancelMarketOrders(market, assetID string) (interface{}, error) {
+// CancelMarketOrders cancels market orders by market/asset_id.
+func (c *ClobClient) CancelMarketOrders(params *OrderMarketCancelParams) (interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
-	body := map[string]string{
-		"market":   market,
-		"asset_id": assetID,
+	body := map[string]string{}
+	if params.Market != "" {
+		body["market"] = params.Market
 	}
+	if params.AssetID != "" {
+		body["asset_id"] = params.AssetID
+	}
+
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal cancel request: %w", err)
@@ -199,9 +203,9 @@ func (c *ClobClient) CancelMarketOrders(market, assetID string) (interface{}, er
 	bodyStr := string(bodyJSON)
 
 	requestArgs := &RequestArgs{
-		Method:        "DELETE",
-		RequestPath:   CancelMarketOrders,
-		Body:          body,
+		Method:         "DELETE",
+		RequestPath:    CancelMarketOrders,
+		Body:           body,
 		SerializedBody: &bodyStr,
 	}
 
@@ -213,22 +217,17 @@ func (c *ClobClient) CancelMarketOrders(market, assetID string) (interface{}, er
 	return c.httpClient.Delete(CancelMarketOrders, headers, bodyStr)
 }
 
-// GetOrders 获取订单列表
-// 需要L2认证
+// GetOrders fetches open orders with pagination.
 func (c *ClobClient) GetOrders(params *OpenOrderParams, nextCursor string) ([]interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
 	if nextCursor == "" {
-		nextCursor = "MA=="
+		nextCursor = INITIAL_CURSOR
 	}
 
-	requestArgs := &RequestArgs{
-		Method:      "GET",
-		RequestPath: Orders,
-	}
-
+	requestArgs := &RequestArgs{Method: "GET", RequestPath: Orders}
 	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
 	if err != nil {
 		return nil, err
@@ -261,19 +260,54 @@ func (c *ClobClient) GetOrders(params *OpenOrderParams, nextCursor string) ([]in
 	return results, nil
 }
 
-// GetOrder 获取单个订单
-// 需要L2认证
+// GetPreMigrationOrders fetches pre-migration (v1) orders.
+func (c *ClobClient) GetPreMigrationOrders(nextCursor string) ([]interface{}, error) {
+	if err := c.assertLevel2Auth(); err != nil {
+		return nil, err
+	}
+
+	if nextCursor == "" {
+		nextCursor = INITIAL_CURSOR
+	}
+
+	requestArgs := &RequestArgs{Method: "GET", RequestPath: PreMigrationOrders}
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []interface{}
+	for nextCursor != EndCursor {
+		path := fmt.Sprintf("%s?next_cursor=%s", PreMigrationOrders, nextCursor)
+		resp, err := c.httpClient.Get(path, headers)
+		if err != nil {
+			return nil, err
+		}
+		respMap, ok := resp.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid response format")
+		}
+		if cursor, ok := respMap["next_cursor"].(string); ok {
+			nextCursor = cursor
+		} else {
+			nextCursor = EndCursor
+		}
+		if data, ok := respMap["data"].([]interface{}); ok {
+			results = append(results, data...)
+		}
+	}
+
+	return results, nil
+}
+
+// GetOrder fetches a single order by ID.
 func (c *ClobClient) GetOrder(orderID string) (interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
 	endpoint := GetOrder + orderID
-	requestArgs := &RequestArgs{
-		Method:      "GET",
-		RequestPath: endpoint,
-	}
-
+	requestArgs := &RequestArgs{Method: "GET", RequestPath: endpoint}
 	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
 	if err != nil {
 		return nil, err
@@ -282,22 +316,17 @@ func (c *ClobClient) GetOrder(orderID string) (interface{}, error) {
 	return c.httpClient.Get(endpoint, headers)
 }
 
-// GetTrades 获取交易历史
-// 需要L2认证
+// GetTrades fetches trade history.
 func (c *ClobClient) GetTrades(params *TradeParams, nextCursor string) ([]interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
 	if nextCursor == "" {
-		nextCursor = "MA=="
+		nextCursor = INITIAL_CURSOR
 	}
 
-	requestArgs := &RequestArgs{
-		Method:      "GET",
-		RequestPath: Trades,
-	}
-
+	requestArgs := &RequestArgs{Method: "GET", RequestPath: Trades}
 	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
 	if err != nil {
 		return nil, err
@@ -330,31 +359,24 @@ func (c *ClobClient) GetTrades(params *TradeParams, nextCursor string) ([]interf
 	return results, nil
 }
 
-// GetBalanceAllowance 获取余额和授权
-// 需要L2认证
+// GetBalanceAllowance fetches balance and allowance.
 func (c *ClobClient) GetBalanceAllowance(params *BalanceAllowanceParams) (map[string]interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
-	// 如果signature_type未设置，使用builder的签名类型
 	if params.SignatureType == nil || (params.SignatureType != nil && *params.SignatureType < 0) {
 		if c.builder != nil {
 			sigType := c.builder.GetSigType()
 			params.SignatureType = &sigType
 		} else {
-			// 默认使用0（EOA）
 			defaultSigType := 0
 			params.SignatureType = &defaultSigType
 		}
 	}
 
 	url := AddBalanceAllowanceParamsToURL(c.host+GetBalanceAllowance, params)
-	requestArgs := &RequestArgs{
-		Method:      "GET",
-		RequestPath: GetBalanceAllowance,
-	}
-
+	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetBalanceAllowance}
 	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
 	if err != nil {
 		return nil, err
@@ -373,8 +395,7 @@ func (c *ClobClient) GetBalanceAllowance(params *BalanceAllowanceParams) (map[st
 	return respMap, nil
 }
 
-// GetNotifications 获取通知
-// 需要L2认证
+// GetNotifications fetches notifications.
 func (c *ClobClient) GetNotifications() (interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
@@ -382,15 +403,11 @@ func (c *ClobClient) GetNotifications() (interface{}, error) {
 
 	sigType := 0
 	if c.builder != nil {
-		// 这里需要从builder获取sigType，暂时设为0
+		sigType = c.builder.GetSigType()
 	}
 
 	url := fmt.Sprintf("%s?signature_type=%d", GetNotifications, sigType)
-	requestArgs := &RequestArgs{
-		Method:      "GET",
-		RequestPath: GetNotifications,
-	}
-
+	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetNotifications}
 	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
 	if err != nil {
 		return nil, err
@@ -399,19 +416,14 @@ func (c *ClobClient) GetNotifications() (interface{}, error) {
 	return c.httpClient.Get(url, headers)
 }
 
-// DropNotifications 删除通知
-// 需要L2认证
+// DropNotifications deletes notifications.
 func (c *ClobClient) DropNotifications(params *DropNotificationParams) (interface{}, error) {
 	if err := c.assertLevel2Auth(); err != nil {
 		return nil, err
 	}
 
 	url := DropNotificationsQueryParams(c.host+DropNotifications, params)
-	requestArgs := &RequestArgs{
-		Method:      "DELETE",
-		RequestPath: DropNotifications,
-	}
-
+	requestArgs := &RequestArgs{Method: "DELETE", RequestPath: DropNotifications}
 	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
 	if err != nil {
 		return nil, err
@@ -419,4 +431,3 @@ func (c *ClobClient) DropNotifications(params *DropNotificationParams) (interfac
 
 	return c.httpClient.Delete(url[len(c.host):], headers, nil)
 }
-

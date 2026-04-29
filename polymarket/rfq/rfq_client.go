@@ -11,20 +11,20 @@ type HTTPClientInterface interface {
 	Delete(path string, headers map[string]string, body interface{}) (interface{}, error)
 }
 
-// SignedOrderData 签名订单数据（用于避免循环导入）
+// SignedOrderData 签名订单数据（用于避免循环导入, v2 format）
 type SignedOrderData struct {
 	Salt          int64  `json:"salt"`
 	Maker         string `json:"maker"`
 	Signer        string `json:"signer"`
-	Taker         string `json:"taker"`
 	TokenID       string `json:"tokenId"`
 	MakerAmount   string `json:"makerAmount"`
 	TakerAmount   string `json:"takerAmount"`
 	Expiration    string `json:"expiration"`
-	Nonce         string `json:"nonce"`
-	FeeRateBps    string `json:"feeRateBps"`
 	Side          string `json:"side"`
 	SignatureType int    `json:"signatureType"`
+	Timestamp     string `json:"timestamp"`
+	Metadata      string `json:"metadata"`
+	Builder       string `json:"builder"`
 	Signature     string `json:"signature"`
 }
 
@@ -337,7 +337,7 @@ func (r *RfqClient) AcceptQuote(params *AcceptQuoteParams) (interface{}, error) 
 		return nil, fmt.Errorf("failed to create order: %w", err)
 	}
 
-	// 步骤4: 构建接受请求的payload
+	// 步骤4: 构建接受请求的payload (v2 format)
 	acceptPayload := map[string]interface{}{
 		"requestId":     params.RequestID,
 		"quoteId":       params.QuoteID,
@@ -345,15 +345,15 @@ func (r *RfqClient) AcceptQuote(params *AcceptQuoteParams) (interface{}, error) 
 		"salt":          order.Salt,
 		"maker":         order.Maker,
 		"signer":        order.Signer,
-		"taker":         order.Taker,
 		"tokenId":       order.TokenID,
 		"makerAmount":   order.MakerAmount,
 		"takerAmount":   order.TakerAmount,
 		"expiration":    order.Expiration,
-		"nonce":         order.Nonce,
-		"feeRateBps":    order.FeeRateBps,
 		"side":          orderCreationPayload.Side,
 		"signatureType": order.SignatureType,
+		"timestamp":     order.Timestamp,
+		"metadata":      order.Metadata,
+		"builder":       order.Builder,
 		"signature":     order.Signature,
 	}
 
@@ -443,7 +443,7 @@ func (r *RfqClient) ApproveOrder(params *ApproveOrderParams) (interface{}, error
 		return nil, fmt.Errorf("failed to create order: %w", err)
 	}
 
-	// 步骤4: 构建批准请求的payload
+	// 步骤4: 构建批准请求的payload (v2 format)
 	approvePayload := map[string]interface{}{
 		"requestId":     params.RequestID,
 		"quoteId":       params.QuoteID,
@@ -451,15 +451,15 @@ func (r *RfqClient) ApproveOrder(params *ApproveOrderParams) (interface{}, error
 		"salt":          order.Salt,
 		"maker":         order.Maker,
 		"signer":        order.Signer,
-		"taker":         order.Taker,
 		"tokenId":       order.TokenID,
 		"makerAmount":   order.MakerAmount,
 		"takerAmount":   order.TakerAmount,
 		"expiration":    order.Expiration,
-		"nonce":         order.Nonce,
-		"feeRateBps":    order.FeeRateBps,
 		"side":          side,
 		"signatureType": order.SignatureType,
+		"timestamp":     order.Timestamp,
+		"metadata":      order.Metadata,
+		"builder":       order.Builder,
 		"signature":     order.Signature,
 	}
 

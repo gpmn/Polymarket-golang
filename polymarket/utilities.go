@@ -39,15 +39,16 @@ func ParseRawOrderBookSummary(rawObs map[string]interface{}) (*OrderBookSummary,
 	}
 
 	obs := &OrderBookSummary{
-		Market:       getString(rawObs, "market"),
-		AssetID:      getString(rawObs, "asset_id"),
-		Timestamp:    getString(rawObs, "timestamp"),
-		MinOrderSize: getString(rawObs, "min_order_size"),
-		NegRisk:      getBool(rawObs, "neg_risk"),
-		TickSize:     getString(rawObs, "tick_size"),
-		Bids:         bids,
-		Asks:         asks,
-		Hash:         getString(rawObs, "hash"),
+		Market:         getString(rawObs, "market"),
+		AssetID:        getString(rawObs, "asset_id"),
+		Timestamp:      getString(rawObs, "timestamp"),
+		MinOrderSize:   getString(rawObs, "min_order_size"),
+		NegRisk:        getBool(rawObs, "neg_risk"),
+		TickSize:       getString(rawObs, "tick_size"),
+		Bids:           bids,
+		Asks:           asks,
+		LastTradePrice: getString(rawObs, "last_trade_price"),
+		Hash:           getString(rawObs, "hash"),
 	}
 
 	return obs, nil
@@ -55,69 +56,86 @@ func ParseRawOrderBookSummary(rawObs map[string]interface{}) (*OrderBookSummary,
 
 // GenerateOrderBookSummaryHash 生成订单簿摘要哈希
 func GenerateOrderBookSummaryHash(orderbook *OrderBookSummary) string {
-	// 临时清空hash
 	originalHash := orderbook.Hash
 	orderbook.Hash = ""
 
-	// 序列化为JSON
 	jsonData, err := json.Marshal(orderbook)
 	if err != nil {
 		orderbook.Hash = originalHash
 		return ""
 	}
 
-	// SHA1哈希
 	hash := sha1.Sum(jsonData)
 	hashStr := fmt.Sprintf("%x", hash)
 
-	// 恢复hash
 	orderbook.Hash = hashStr
 	return hashStr
 }
 
-// OrderToJSON 将订单转换为JSON格式
-// 格式与 Python py_order_utils.SignedOrder.dict() 完全一致
-func OrderToJSON(order *SignedOrder, owner string, orderType OrderType) map[string]interface{} {
-	return OrderToJSONWithPostOnly(order, owner, orderType, false)
+// OrderToJSONV2 converts a v2 signed order to API JSON format.
+func OrderToJSONV2(order *SignedOrderV2, owner string, orderType OrderType, postOnly bool, deferExec bool) map[string]interface{} {
+	sideStr := order.Side
+	if sideStr == "" {
+		if order.SideValue == 1 {
+			sideStr = "SELL"
+		} else {
+			sideStr = "BUY"
+		}
+	}
+
+	orderDict := map[string]interface{}{
+		"salt":          parseBigIntOrZero(order.Salt),
+		"maker":         common.HexToAddress(order.Maker).Hex(),
+		"signer":        common.HexToAddress(order.Signer).Hex(),
+		"tokenId":       order.TokenId,
+		"makerAmount":   order.MakerAmount,
+		"takerAmount":   order.TakerAmount,
+		"side":          sideStr,
+		"expiration":    order.Expiration,
+		"signatureType": order.SignatureType,
+		"timestamp":     parseBigIntOrZero(order.Timestamp),
+		"metadata":      order.Metadata,
+		"builder":       order.Builder,
+		"signature":     order.Signature,
+	}
+
+	return map[string]interface{}{
+		"order":     orderDict,
+		"owner":     owner,
+		"orderType": string(orderType),
+		"postOnly":  postOnly,
+		"deferExec": deferExec,
+	}
 }
 
-// OrderToJSONWithPostOnly 将订单转换为JSON格式（支持 PostOnly）
-func OrderToJSONWithPostOnly(order *SignedOrder, owner string, orderType OrderType, postOnly bool) map[string]interface{} {
-	// 将签名从 []byte 转换为 hex 字符串（带 0x 前缀）
+// OrderToJSONV1 converts a v1 signed order to API JSON format.
+func OrderToJSONV1(order *SignedOrder, owner string, orderType OrderType, postOnly bool) map[string]interface{} {
 	var signatureHex string
 	if order.Signature != nil {
-		// 检查签名是否已经是 hex 格式的字符串（base64 编码）
 		sigStr := string(order.Signature)
 		if strings.HasPrefix(sigStr, "0x") {
 			signatureHex = sigStr
 		} else {
-			// 尝试解码 base64
 			decoded, err := base64.StdEncoding.DecodeString(sigStr)
 			if err == nil {
 				signatureHex = "0x" + hex.EncodeToString(decoded)
 			} else {
-				// 直接转换为 hex
 				signatureHex = "0x" + hex.EncodeToString(order.Signature)
 			}
 		}
 	}
 
-	// 将地址转换为 checksummed 格式
 	makerAddr := common.HexToAddress(order.Maker.Hex())
 	takerAddr := common.HexToAddress(order.Taker.Hex())
 	signerAddr := common.HexToAddress(order.Signer.Hex())
 
-	// 将 side 从数字转换为字符串 "BUY" 或 "SELL"
-	// Python: BUY = 0, SELL = 1
 	sideStr := "BUY"
 	if order.Side.Int64() == 1 {
 		sideStr = "SELL"
 	}
 
-	// 将SignedOrder转换为字典
-	// 格式与 Python py_order_utils.SignedOrder.dict() 完全一致
 	orderDict := map[string]interface{}{
-		"salt":          order.Salt.Int64(),      // 整数，不是字符串
+		"salt":          order.Salt.Int64(),
 		"maker":         makerAddr.Hex(),
 		"signer":        signerAddr.Hex(),
 		"taker":         takerAddr.Hex(),
@@ -127,8 +145,8 @@ func OrderToJSONWithPostOnly(order *SignedOrder, owner string, orderType OrderTy
 		"expiration":    order.Expiration.String(),
 		"nonce":         order.Nonce.String(),
 		"feeRateBps":    order.FeeRateBps.String(),
-		"side":          sideStr,                          // 字符串 "BUY" 或 "SELL"
-		"signatureType": int(order.SignatureType.Int64()), // 整数
+		"side":          sideStr,
+		"signatureType": int(order.SignatureType.Int64()),
 		"signature":     signatureHex,
 	}
 	return map[string]interface{}{
@@ -137,6 +155,24 @@ func OrderToJSONWithPostOnly(order *SignedOrder, owner string, orderType OrderTy
 		"orderType": string(orderType),
 		"postOnly":  postOnly,
 	}
+}
+
+// OrderToJSON is the legacy wrapper; prefers v2 format.
+// Deprecated: use OrderToJSONV2 directly.
+func OrderToJSON(order *SignedOrder, owner string, orderType OrderType) map[string]interface{} {
+	return OrderToJSONV1(order, owner, orderType, false)
+}
+
+// OrderToJSONWithPostOnly is the legacy wrapper for post_only orders.
+// Deprecated: use OrderToJSONV1 directly.
+func OrderToJSONWithPostOnly(order *SignedOrder, owner string, orderType OrderType, postOnly bool) map[string]interface{} {
+	return OrderToJSONV1(order, owner, orderType, postOnly)
+}
+
+// IsV2Order returns true if the order is a v2 signed order.
+func IsV2Order(order interface{}) bool {
+	_, ok := order.(*SignedOrderV2)
+	return ok
 }
 
 // IsTickSizeSmaller 检查tick size是否更小
@@ -150,6 +186,18 @@ func IsTickSizeSmaller(a, b TickSize) bool {
 func PriceValid(price float64, tickSize TickSize) bool {
 	tickSizeFloat, _ := strconv.ParseFloat(string(tickSize), 64)
 	return price >= tickSizeFloat && price <= 1.0-tickSizeFloat
+}
+
+// parseBigIntOrZero parses a string as a big integer, returning 0 on failure.
+func parseBigIntOrZero(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // 辅助函数
@@ -168,4 +216,3 @@ func getBool(m map[string]interface{}, key string) bool {
 	}
 	return false
 }
-

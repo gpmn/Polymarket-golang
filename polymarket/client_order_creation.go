@@ -2,128 +2,175 @@ package polymarket
 
 import (
 	"fmt"
-	"math/big"
 	"strconv"
 
 	obuilder "github.com/0xNetuser/Polymarket-golang/polymarket/order_builder"
 	"github.com/polymarket/go-order-utils/pkg/model"
 )
 
-// ResolveTickSize 解析tick size
+// resolveTickSize resolves the tick size for a token.
 func (c *ClobClient) resolveTickSize(tokenID string, tickSize *TickSize) (TickSize, error) {
 	minTickSize, err := c.GetTickSize(tokenID)
 	if err != nil {
 		return "", err
 	}
-
 	if tickSize != nil {
 		if IsTickSizeSmaller(*tickSize, minTickSize) {
 			return "", fmt.Errorf("invalid tick size (%s), minimum for the market is %s", *tickSize, minTickSize)
 		}
 		return *tickSize, nil
 	}
-
 	return minTickSize, nil
 }
 
-// ResolveFeeRate 解析手续费率
+// resolveFeeRate resolves fee rate (only used for v1 orders).
 func (c *ClobClient) resolveFeeRate(tokenID string, userFeeRate int) (int, error) {
 	marketFeeRateBps, err := c.GetFeeRateBps(tokenID)
 	if err != nil {
 		return 0, err
 	}
-
-	// 如果市场手续费率和用户提供的手续费率都不为零，验证它们是否匹配
 	if marketFeeRateBps > 0 && userFeeRate > 0 && userFeeRate != marketFeeRateBps {
 		return 0, fmt.Errorf("invalid user provided fee rate: (%d), fee rate for the market must be %d", userFeeRate, marketFeeRateBps)
 	}
-
 	return marketFeeRateBps, nil
 }
 
-// CreateOrder 创建并签名订单（限价订单）
-// 需要L1认证
-// options.RawOrder = true 时跳过从服务器获取 tick_size，但必须通过 options.TickSize 提供
-func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrderOptions) (*SignedOrder, error) {
+// CreateOrder creates and signs a limit order (v2 by default).
+func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrderOptions) (interface{}, error) {
 	if err := c.assertLevel1Auth(); err != nil {
 		return nil, err
 	}
 
-	var side model.Side
-	var makerAmount, takerAmount *big.Int
-	var negRisk bool
-	var err error
-	var tickSize TickSize
+	tokenID := orderArgs.TokenID
+	c.ensureMarketInfoCached(tokenID)
 
-	// 检查是否使用原始订单模式（跳过从服务器获取 tick_size）
-	rawOrder := options != nil && options.RawOrder
-
-	if rawOrder {
-		// 原始订单模式：必须提供 TickSize
-		if options.TickSize == nil {
-			return nil, fmt.Errorf("RawOrder mode requires TickSize to be provided in options")
-		}
-		tickSize = *options.TickSize
-
-		// 解析 neg risk（必须提供）
-		if options.NegRisk == nil {
-			return nil, fmt.Errorf("RawOrder mode requires NegRisk to be provided in options")
-		}
-		negRisk = *options.NegRisk
-	} else {
-		// 标准模式：从服务器获取 tick_size（如果未提供）
-		var tickSizePtr *TickSize
-		if options != nil && options.TickSize != nil {
-			tickSizePtr = options.TickSize
-		}
-		tickSize, err = c.resolveTickSize(orderArgs.TokenID, tickSizePtr)
-		if err != nil {
-			return nil, err
-		}
-
-		// 解析neg risk
-		if options != nil && options.NegRisk != nil {
-			negRisk = *options.NegRisk
-		} else {
-			negRisk, err = c.GetNegRisk(orderArgs.TokenID)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		// 解析手续费率
-		feeRateBps, err := c.resolveFeeRate(orderArgs.TokenID, orderArgs.FeeRateBps)
-		if err != nil {
-			return nil, err
-		}
-		orderArgs.FeeRateBps = feeRateBps
+	// Resolve tick size
+	var tickSizePtr *TickSize
+	if options != nil && options.TickSize != nil {
+		tickSizePtr = options.TickSize
+	}
+	tickSize, err := c.resolveTickSize(tokenID, tickSizePtr)
+	if err != nil {
+		return nil, err
 	}
 
-	// 验证价格
+	// Validate price
 	if !PriceValid(orderArgs.Price, tickSize) {
 		tickSizeFloat, _ := strconv.ParseFloat(string(tickSize), 64)
 		return nil, fmt.Errorf("price (%.6f), min: %s - max: %.6f", orderArgs.Price, tickSize, 1.0-tickSizeFloat)
 	}
 
-	// 获取舍入配置
+	// Resolve neg risk
+	negRisk := false
+	if options != nil && options.NegRisk != nil {
+		negRisk = *options.NegRisk
+	} else {
+		negRisk, err = c.GetNegRisk(tokenID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Get rounding config
 	roundConfig, ok := obuilder.RoundingConfig[string(tickSize)]
 	if !ok {
 		return nil, fmt.Errorf("unsupported tick size: %s", tickSize)
 	}
 
-	// 获取订单金额（带舍入）
-	side, makerAmount, takerAmount, err = c.builder.GetOrderAmounts(
-		orderArgs.Side,
-		orderArgs.Size,
-		orderArgs.Price,
-		roundConfig,
-	)
+	// Compute order amounts
+	side, makerAmount, takerAmount, err := c.builder.GetOrderAmounts(orderArgs.Side, orderArgs.Size, orderArgs.Price, roundConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	// 构建OrderData
-	taker := orderArgs.Taker
+	// Apply builder code
+	builderCode := orderArgs.BuilderCode
+	if builderCode == "" || builderCode == BYTES32_ZERO {
+		if c.builderConfig != nil && c.builderConfig.BuilderCode != "" {
+			builderCode = c.builderConfig.BuilderCode
+		}
+	}
+	if builderCode == "" {
+		builderCode = BYTES32_ZERO
+	}
+
+	metadata := orderArgs.Metadata
+	if metadata == "" {
+		metadata = BYTES32_ZERO
+	}
+
+	expiration := "0"
+	if orderArgs.Expiration > 0 {
+		expiration = strconv.Itoa(orderArgs.Expiration)
+	}
+
+	version := c.resolveVersion()
+
+	if version >= 2 {
+		// Build v2 order
+		sideVal := 0
+		if side == model.SELL {
+			sideVal = 1
+		}
+
+		saltStr := obuilder.GenerateSalt()
+		timestamp := obuilder.CurrentTimestampMs()
+
+		orderData := &obuilder.SignedOrderV2Data{
+			Salt:          saltStr,
+			Maker:         c.builder.GetFunder(),
+			Signer:        c.signer.Address(),
+			TokenId:       tokenID,
+			MakerAmount:   makerAmount.String(),
+			TakerAmount:   takerAmount.String(),
+			Side:          sideVal,
+			Expiration:    expiration,
+			SignatureType: c.builder.GetSigType(),
+			Timestamp:     timestamp,
+			Metadata:      metadata,
+			Builder:       builderCode,
+		}
+
+		exchangeAddr := c.GetExchangeAddressV2(negRisk)
+		signedOrder, err := c.builder.BuildSignedOrderV2(orderData, exchangeAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build v2 signed order: %w", err)
+		}
+
+		// Convert to public SignedOrderV2 type
+		sideStr := "BUY"
+		if sideVal == 1 {
+			sideStr = "SELL"
+		}
+
+		return &SignedOrderV2{
+			Salt:          signedOrder.Salt,
+			Maker:         signedOrder.Maker,
+			Signer:        signedOrder.Signer,
+			TokenId:       signedOrder.TokenId,
+			MakerAmount:   signedOrder.MakerAmount,
+			TakerAmount:   signedOrder.TakerAmount,
+			Side:          sideStr,
+			SideValue:     sideVal,
+			Expiration:    signedOrder.Expiration,
+			SignatureType: signedOrder.SignatureType,
+			Timestamp:     signedOrder.Timestamp,
+			Metadata:      signedOrder.Metadata,
+			Builder:       signedOrder.Builder,
+			Signature:     signedOrder.Signature,
+		}, nil
+	}
+
+	// V1 fallback
+	feeRateBps, err := c.resolveFeeRate(tokenID, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	taker := ""
+	if v1Args, ok := interface{}(orderArgs).(*OrderArgsV1); ok {
+		taker = v1Args.Taker
+	}
 	if taker == "" {
 		taker = ZeroAddress
 	}
@@ -131,98 +178,166 @@ func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrd
 	orderData := &model.OrderData{
 		Maker:         c.builder.GetFunder(),
 		Taker:         taker,
-		TokenId:       orderArgs.TokenID,
+		TokenId:       tokenID,
 		MakerAmount:   makerAmount.String(),
 		TakerAmount:   takerAmount.String(),
 		Side:          side,
-		FeeRateBps:    strconv.Itoa(orderArgs.FeeRateBps),
-		Nonce:         strconv.Itoa(orderArgs.Nonce),
+		FeeRateBps:    strconv.Itoa(feeRateBps),
+		Nonce:         strconv.Itoa(orderArgs.Nonce()),
 		Signer:        c.signer.Address(),
-		Expiration:    strconv.Itoa(orderArgs.Expiration),
+		Expiration:    expiration,
 		SignatureType: model.SignatureType(c.builder.GetSigType()),
 	}
 
-	// 获取合约配置
-	contractConfig := getContractConfig(c.chainID, negRisk)
-
-	// 构建并签名订单
-	signedOrder, err := c.builder.BuildSignedOrder(orderData, contractConfig.Exchange, c.chainID, negRisk)
-	if err != nil {
-		return nil, err
+	contractConfig := getContractConfig(c.chainID)
+	var exchangeAddr string
+	if negRisk {
+		exchangeAddr = contractConfig.NegRiskExchange
+	} else {
+		exchangeAddr = contractConfig.Exchange
 	}
 
-	return signedOrder, nil
+	return c.builder.BuildSignedOrder(orderData, exchangeAddr, c.chainID, negRisk)
 }
 
-// CreateMarketOrder 创建并签名市价订单
-// 需要L1认证
-func (c *ClobClient) CreateMarketOrder(orderArgs *MarketOrderArgs, options *PartialCreateOrderOptions) (*SignedOrder, error) {
+// CreateMarketOrder creates and signs a market order (v2 by default).
+func (c *ClobClient) CreateMarketOrder(orderArgs *MarketOrderArgs, options *PartialCreateOrderOptions) (interface{}, error) {
 	if err := c.assertLevel1Auth(); err != nil {
 		return nil, err
 	}
 
-	// 解析tick size
+	tokenID := orderArgs.TokenID
+	c.ensureMarketInfoCached(tokenID)
+
+	// Resolve tick size
 	var tickSizePtr *TickSize
 	if options != nil && options.TickSize != nil {
 		tickSizePtr = options.TickSize
 	}
-	tickSize, err := c.resolveTickSize(orderArgs.TokenID, tickSizePtr)
+	tickSize, err := c.resolveTickSize(tokenID, tickSizePtr)
 	if err != nil {
 		return nil, err
 	}
 
-	// 如果价格未设置或为0，计算市价
+	// Calculate market price if not set
 	if orderArgs.Price <= 0 {
-		price, err := c.CalculateMarketPrice(orderArgs.TokenID, orderArgs.Side, orderArgs.Amount, orderArgs.OrderType)
+		price, err := c.CalculateMarketPrice(tokenID, orderArgs.Side, orderArgs.Amount, orderArgs.OrderType)
 		if err != nil {
 			return nil, err
 		}
 		orderArgs.Price = price
 	}
 
-	// 验证价格
+	// Validate price
 	if !PriceValid(orderArgs.Price, tickSize) {
 		tickSizeFloat, _ := strconv.ParseFloat(string(tickSize), 64)
 		return nil, fmt.Errorf("price (%.6f), min: %s - max: %.6f", orderArgs.Price, tickSize, 1.0-tickSizeFloat)
 	}
 
-	// 解析neg risk
+	// Resolve neg risk
 	negRisk := false
 	if options != nil && options.NegRisk != nil {
 		negRisk = *options.NegRisk
 	} else {
-		negRisk, err = c.GetNegRisk(orderArgs.TokenID)
+		negRisk, err = c.GetNegRisk(tokenID)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	// 解析手续费率
-	feeRateBps, err := c.resolveFeeRate(orderArgs.TokenID, orderArgs.FeeRateBps)
-	if err != nil {
-		return nil, err
-	}
-	orderArgs.FeeRateBps = feeRateBps
-
-	// 获取舍入配置
+	// Get rounding config
 	roundConfig, ok := obuilder.RoundingConfig[string(tickSize)]
 	if !ok {
 		return nil, fmt.Errorf("unsupported tick size: %s", tickSize)
 	}
 
-	// 获取订单金额
-	side, makerAmount, takerAmount, err := c.builder.GetMarketOrderAmounts(
-		orderArgs.Side,
-		orderArgs.Amount,
-		orderArgs.Price,
-		roundConfig,
-	)
+	// Compute order amounts (v2 uses round_down for price in market orders)
+	side, makerAmount, takerAmount, err := c.builder.GetMarketOrderAmounts(orderArgs.Side, orderArgs.Amount, orderArgs.Price, roundConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	// 构建OrderData
-	taker := orderArgs.Taker
+	// Apply builder code
+	builderCode := orderArgs.BuilderCode
+	if builderCode == "" || builderCode == BYTES32_ZERO {
+		if c.builderConfig != nil && c.builderConfig.BuilderCode != "" {
+			builderCode = c.builderConfig.BuilderCode
+		}
+	}
+	if builderCode == "" {
+		builderCode = BYTES32_ZERO
+	}
+
+	metadata := orderArgs.Metadata
+	if metadata == "" {
+		metadata = BYTES32_ZERO
+	}
+
+	version := c.resolveVersion()
+
+	if version >= 2 {
+		sideVal := 0
+		if side == model.SELL {
+			sideVal = 1
+		}
+
+		saltStr := obuilder.GenerateSalt()
+		timestamp := obuilder.CurrentTimestampMs()
+
+		orderData := &obuilder.SignedOrderV2Data{
+			Salt:          saltStr,
+			Maker:         c.builder.GetFunder(),
+			Signer:        c.signer.Address(),
+			TokenId:       tokenID,
+			MakerAmount:   makerAmount.String(),
+			TakerAmount:   takerAmount.String(),
+			Side:          sideVal,
+			Expiration:    "0", // market orders have no expiration
+			SignatureType: c.builder.GetSigType(),
+			Timestamp:     timestamp,
+			Metadata:      metadata,
+			Builder:       builderCode,
+		}
+
+		exchangeAddr := c.GetExchangeAddressV2(negRisk)
+		signedOrder, err := c.builder.BuildSignedOrderV2(orderData, exchangeAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build v2 market order: %w", err)
+		}
+
+		sideStr := "BUY"
+		if sideVal == 1 {
+			sideStr = "SELL"
+		}
+
+		return &SignedOrderV2{
+			Salt:          signedOrder.Salt,
+			Maker:         signedOrder.Maker,
+			Signer:        signedOrder.Signer,
+			TokenId:       signedOrder.TokenId,
+			MakerAmount:   signedOrder.MakerAmount,
+			TakerAmount:   signedOrder.TakerAmount,
+			Side:          sideStr,
+			SideValue:     sideVal,
+			Expiration:    signedOrder.Expiration,
+			SignatureType: signedOrder.SignatureType,
+			Timestamp:     signedOrder.Timestamp,
+			Metadata:      signedOrder.Metadata,
+			Builder:       signedOrder.Builder,
+			Signature:     signedOrder.Signature,
+		}, nil
+	}
+
+	// V1 fallback
+	feeRateBps, err := c.resolveFeeRate(tokenID, orderArgs.FeeRateBps())
+	if err != nil {
+		return nil, err
+	}
+
+	taker := ""
+	if v1Args, ok := interface{}(orderArgs).(*MarketOrderArgsV1); ok {
+		taker = v1Args.Taker
+	}
 	if taker == "" {
 		taker = ZeroAddress
 	}
@@ -230,39 +345,35 @@ func (c *ClobClient) CreateMarketOrder(orderArgs *MarketOrderArgs, options *Part
 	orderData := &model.OrderData{
 		Maker:         c.builder.GetFunder(),
 		Taker:         taker,
-		TokenId:       orderArgs.TokenID,
+		TokenId:       tokenID,
 		MakerAmount:   makerAmount.String(),
 		TakerAmount:   takerAmount.String(),
 		Side:          side,
-		FeeRateBps:    strconv.Itoa(orderArgs.FeeRateBps),
-		Nonce:         strconv.Itoa(orderArgs.Nonce),
+		FeeRateBps:    strconv.Itoa(feeRateBps),
+		Nonce:         strconv.Itoa(orderArgs.Nonce()),
 		Signer:        c.signer.Address(),
-		Expiration:    "0", // 市价订单无过期时间
+		Expiration:    "0",
 		SignatureType: model.SignatureType(c.builder.GetSigType()),
 	}
 
-	// 获取合约配置
-	contractConfig := getContractConfig(c.chainID, negRisk)
-
-	// 构建并签名订单
-	signedOrder, err := c.builder.BuildSignedOrder(orderData, contractConfig.Exchange, c.chainID, negRisk)
-	if err != nil {
-		return nil, err
+	contractConfig := getContractConfig(c.chainID)
+	var exchangeAddr string
+	if negRisk {
+		exchangeAddr = contractConfig.NegRiskExchange
+	} else {
+		exchangeAddr = contractConfig.Exchange
 	}
 
-	return signedOrder, nil
+	return c.builder.BuildSignedOrder(orderData, exchangeAddr, c.chainID, negRisk)
 }
 
-// CreateAndPostOrder 创建并提交订单（便捷方法）
-// 支持通过 options.OrderType 指定订单类型：GTC, FOK, GTD, FAK（默认 GTC）
-// 返回 PostOrderResult，包含原始 Payload 和 API 响应
+// CreateAndPostOrder creates and posts a limit order.
 func (c *ClobClient) CreateAndPostOrder(orderArgs *OrderArgs, options *PartialCreateOrderOptions) (*PostOrderResult, error) {
 	order, err := c.CreateOrder(orderArgs, options)
 	if err != nil {
 		return nil, err
 	}
 
-	// 确定订单类型，默认为 GTC
 	orderType := OrderTypeGTC
 	if options != nil && options.OrderType != nil {
 		orderType = *options.OrderType
@@ -271,7 +382,22 @@ func (c *ClobClient) CreateAndPostOrder(orderArgs *OrderArgs, options *PartialCr
 	return c.PostOrder(order, orderType)
 }
 
-// CalculateMarketPrice 计算市价
+// CreateAndPostMarketOrder creates and posts a market order.
+func (c *ClobClient) CreateAndPostMarketOrder(orderArgs *MarketOrderArgs, options *PartialCreateOrderOptions) (*PostOrderResult, error) {
+	order, err := c.CreateMarketOrder(orderArgs, options)
+	if err != nil {
+		return nil, err
+	}
+
+	orderType := OrderTypeFOK
+	if options != nil && options.OrderType != nil {
+		orderType = *options.OrderType
+	}
+
+	return c.PostOrder(order, orderType)
+}
+
+// CalculateMarketPrice computes the market price from the order book.
 func (c *ClobClient) CalculateMarketPrice(tokenID, side string, amount float64, orderType OrderType) (float64, error) {
 	book, err := c.GetOrderBook(tokenID)
 	if err != nil {
@@ -283,15 +409,15 @@ func (c *ClobClient) CalculateMarketPrice(tokenID, side string, amount float64, 
 			return 0, fmt.Errorf("no match")
 		}
 		return c.builder.CalculateBuyMarketPrice(ConvertOrderSummaries(book.Asks), amount, string(orderType))
-	} else {
-		if len(book.Bids) == 0 {
-			return 0, fmt.Errorf("no match")
-		}
-		return c.builder.CalculateSellMarketPrice(ConvertOrderSummaries(book.Bids), amount, string(orderType))
 	}
+
+	if len(book.Bids) == 0 {
+		return 0, fmt.Errorf("no match")
+	}
+	return c.builder.CalculateSellMarketPrice(ConvertOrderSummaries(book.Bids), amount, string(orderType))
 }
 
-// ConvertOrderSummaries 转换OrderSummary为order_builder.OrderSummary接口（导出函数）
+// ConvertOrderSummaries converts OrderSummary to interface{} slice.
 func ConvertOrderSummaries(summaries []OrderSummary) []interface{} {
 	result := make([]interface{}, len(summaries))
 	for i, s := range summaries {
@@ -299,3 +425,17 @@ func ConvertOrderSummaries(summaries []OrderSummary) []interface{} {
 	}
 	return result
 }
+
+// ---- Accessor methods for back-compat with v1 args (used by v1 fallback) ----
+
+// FeeRateBps returns the fee rate (0 for v2).
+func (a *OrderArgs) FeeRateBps() int { return 0 }
+
+// Nonce returns the nonce (0 for v2).
+func (a *OrderArgs) Nonce() int { return 0 }
+
+// FeeRateBps returns the fee rate (0 for v2).
+func (a *MarketOrderArgs) FeeRateBps() int { return 0 }
+
+// Nonce returns the nonce (0 for v2).
+func (a *MarketOrderArgs) Nonce() int { return 0 }

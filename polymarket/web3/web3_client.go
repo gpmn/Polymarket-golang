@@ -423,43 +423,71 @@ func (c *PolymarketWeb3Client) SetConditionalTokensApproval(spender common.Addre
 func (c *PolymarketWeb3Client) SetAllApprovals() ([]*TransactionReceipt, error) {
 	var receipts []*TransactionReceipt
 
-	fmt.Println("Approving ConditionalTokens as spender on USDC")
+	fmt.Println("Approving ConditionalTokens as spender on Collateral")
 	r, err := c.SetCollateralApproval(c.ConditionalTokensAddress)
 	if err != nil {
 		return receipts, err
 	}
 	receipts = append(receipts, r)
 
-	fmt.Println("Approving CTFExchange as spender on USDC")
+	fmt.Println("Approving CTFExchange (v1) as spender on Collateral")
 	r, err = c.SetCollateralApproval(c.ExchangeAddress)
 	if err != nil {
 		return receipts, err
 	}
 	receipts = append(receipts, r)
 
-	fmt.Println("Approving NegRiskCtfExchange as spender on USDC")
+	fmt.Println("Approving CTFExchange (v2) as spender on Collateral")
+	r, err = c.SetCollateralApproval(c.ExchangeV2Address)
+	if err != nil {
+		return receipts, err
+	}
+	receipts = append(receipts, r)
+
+	fmt.Println("Approving NegRiskCtfExchange (v1) as spender on Collateral")
 	r, err = c.SetCollateralApproval(c.NegRiskExchangeAddress)
 	if err != nil {
 		return receipts, err
 	}
 	receipts = append(receipts, r)
 
-	fmt.Println("Approving NegRiskAdapter as spender on USDC")
+	fmt.Println("Approving NegRiskCtfExchange (v2) as spender on Collateral")
+	r, err = c.SetCollateralApproval(c.NegRiskExchangeV2Address)
+	if err != nil {
+		return receipts, err
+	}
+	receipts = append(receipts, r)
+
+	fmt.Println("Approving NegRiskAdapter as spender on Collateral")
 	r, err = c.SetCollateralApproval(NegRiskAdapterAddress)
 	if err != nil {
 		return receipts, err
 	}
 	receipts = append(receipts, r)
 
-	fmt.Println("Approving CTFExchange as spender on ConditionalTokens")
+	fmt.Println("Approving CTFExchange (v1) as spender on ConditionalTokens")
 	r, err = c.SetConditionalTokensApproval(c.ExchangeAddress)
 	if err != nil {
 		return receipts, err
 	}
 	receipts = append(receipts, r)
 
-	fmt.Println("Approving NegRiskCtfExchange as spender on ConditionalTokens")
+	fmt.Println("Approving CTFExchange (v2) as spender on ConditionalTokens")
+	r, err = c.SetConditionalTokensApproval(c.ExchangeV2Address)
+	if err != nil {
+		return receipts, err
+	}
+	receipts = append(receipts, r)
+
+	fmt.Println("Approving NegRiskCtfExchange (v1) as spender on ConditionalTokens")
 	r, err = c.SetConditionalTokensApproval(c.NegRiskExchangeAddress)
+	if err != nil {
+		return receipts, err
+	}
+	receipts = append(receipts, r)
+
+	fmt.Println("Approving NegRiskCtfExchange (v2) as spender on ConditionalTokens")
+	r, err = c.SetConditionalTokensApproval(c.NegRiskExchangeV2Address)
 	if err != nil {
 		return receipts, err
 	}

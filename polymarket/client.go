@@ -8,58 +8,63 @@ import (
 
 	obuilder "github.com/0xNetuser/Polymarket-golang/polymarket/order_builder"
 	"github.com/0xNetuser/Polymarket-golang/polymarket/rfq"
-	"github.com/ethereum/go-ethereum/common"
 )
 
 // ClobClient CLOB客户端
-// 支持三种模式：
-// 1. Level 0: 只需要host URL，可以访问公开端点
-// 2. Level 1: 需要host, chain_id和私钥，可以访问L1认证端点
-// 3. Level 2: 需要host, chain_id, 私钥和API凭证，可以访问所有端点
 type ClobClient struct {
-	host         string
-	chainID      int
-	signer       *Signer
-	creds        *ApiCreds
-	mode         int
-	builder      *obuilder.OrderBuilder
-	httpClient   *HTTPClient
-	
-	// 本地缓存
-	tickSizes    map[string]TickSize
-	negRisk      map[string]bool
-	feeRates     map[string]int
-	
+	host       string
+	chainID    int
+	signer     *Signer
+	creds      *ApiCreds
+	mode       int
+	builder    *obuilder.OrderBuilder
+	httpClient *HTTPClient
+
+	// Builder configuration
+	builderConfig *BuilderConfig
+
+	// Caches
+	tickSizes          map[string]TickSize
+	negRisk            map[string]bool
+	feeRates           map[string]int
+	feeInfos           map[string]*FeeInfo
+	builderFeeRates    map[string]*BuilderFeeRate
+	tokenConditionMap  map[string]string
+
+	// Server version detection
+	cachedVersion *int
+
 	// RFQ客户端
-	rfq          *rfq.RfqClient
-	
-	mu           sync.RWMutex
+	rfq *rfq.RfqClient
+
+	mu sync.RWMutex
 }
 
 // NewClobClient 创建新的CLOB客户端
-// host: CLOB API端点（如 "https://clob.polymarket.com"）
-// chainID: 链ID（137 for Polygon, 80002 for Amoy）
-// privateKey: 私钥（十六进制字符串，可选）
-// creds: API凭证（可选）
-// signatureType: 签名类型（0=EOA, 1=Email/Magic, 2=Browser proxy，可选）
-// funder: 资金持有者地址（用于代理钱包，可选）
 func NewClobClient(host string, chainID int, privateKey string, creds *ApiCreds, signatureType *int, funder string) (*ClobClient, error) {
-	// 移除host末尾的斜杠
+	return NewClobClientWithOptions(host, chainID, privateKey, creds, signatureType, funder, nil)
+}
+
+// NewClobClientWithOptions creates a CLOB client with optional builder config.
+func NewClobClientWithOptions(host string, chainID int, privateKey string, creds *ApiCreds, signatureType *int, funder string, builderConfig *BuilderConfig) (*ClobClient, error) {
 	if strings.HasSuffix(host, "/") {
 		host = host[:len(host)-1]
 	}
 
 	client := &ClobClient{
-		host:      host,
-		chainID:   chainID,
-		creds:     creds,
-		httpClient: NewHTTPClient(host),
-		tickSizes: make(map[string]TickSize),
-		negRisk:   make(map[string]bool),
-		feeRates:  make(map[string]int),
+		host:             host,
+		chainID:          chainID,
+		creds:            creds,
+		httpClient:       NewHTTPClient(host),
+		builderConfig:    builderConfig,
+		tickSizes:        make(map[string]TickSize),
+		negRisk:          make(map[string]bool),
+		feeRates:         make(map[string]int),
+		feeInfos:         make(map[string]*FeeInfo),
+		builderFeeRates:  make(map[string]*BuilderFeeRate),
+		tokenConditionMap: make(map[string]string),
 	}
 
-	// 创建签名器（如果提供了私钥）
 	if privateKey != "" {
 		signer, err := NewSigner(privateKey, chainID)
 		if err != nil {
@@ -67,12 +72,11 @@ func NewClobClient(host string, chainID int, privateKey string, creds *ApiCreds,
 		}
 		client.signer = signer
 
-		// 创建订单构建器
-		sigType := 0 // 默认EOA
+		sigType := 0
 		if signatureType != nil {
 			sigType = *signatureType
 		}
-		
+
 		funderAddr := signer.Address()
 		if funder != "" {
 			funderAddr = funder
@@ -85,10 +89,7 @@ func NewClobClient(host string, chainID int, privateKey string, creds *ApiCreds,
 		client.builder = builder
 	}
 
-	// 确定客户端模式
 	client.mode = client.getClientMode()
-
-	// 创建RFQ客户端
 	client.rfq = rfq.NewRfqClient(client)
 
 	return client, nil
@@ -115,7 +116,7 @@ func (c *ClobClient) GetAddress() string {
 
 // GetCollateralAddress 返回抵押品代币地址
 func (c *ClobClient) GetCollateralAddress() string {
-	config := getContractConfig(c.chainID, false)
+	config := getContractConfig(c.chainID)
 	if config != nil {
 		return config.Collateral
 	}
@@ -124,26 +125,104 @@ func (c *ClobClient) GetCollateralAddress() string {
 
 // GetConditionalAddress 返回条件代币地址
 func (c *ClobClient) GetConditionalAddress() string {
-	config := getContractConfig(c.chainID, false)
+	config := getContractConfig(c.chainID)
 	if config != nil {
 		return config.ConditionalTokens
 	}
 	return ""
 }
 
-// GetExchangeAddress 返回交易所地址
+// GetExchangeAddress returns the exchange address for the given negRisk and version.
 func (c *ClobClient) GetExchangeAddress(negRisk bool) string {
-	config := getContractConfig(c.chainID, negRisk)
-	if config != nil {
-		return config.Exchange
-	}
-	return ""
+	v := c.resolveVersion()
+	return getExchangeAddress(c.chainID, negRisk, v)
+}
+
+// GetExchangeAddressV2 returns the v2 exchange address.
+func (c *ClobClient) GetExchangeAddressV2(negRisk bool) string {
+	return getExchangeAddress(c.chainID, negRisk, 2)
 }
 
 // SetAPICreds 设置API凭证
 func (c *ClobClient) SetAPICreds(creds *ApiCreds) {
 	c.creds = creds
 	c.mode = c.getClientMode()
+}
+
+// SetBuilderConfig sets the builder configuration.
+func (c *ClobClient) SetBuilderConfig(cfg *BuilderConfig) {
+	c.builderConfig = cfg
+}
+
+// GetBuilderConfig returns the builder configuration.
+func (c *ClobClient) GetBuilderConfig() *BuilderConfig {
+	return c.builderConfig
+}
+
+// GetBuilder returns the order builder.
+func (c *ClobClient) GetBuilder() *obuilder.OrderBuilder {
+	return c.builder
+}
+
+// resolveVersion detects the server's API version.
+func (c *ClobClient) resolveVersion() int {
+	c.mu.RLock()
+	if c.cachedVersion != nil {
+		v := *c.cachedVersion
+		c.mu.RUnlock()
+		return v
+	}
+	c.mu.RUnlock()
+
+	version := 2 // default to v2
+	result, err := c.httpClient.Get(VERSION, nil)
+	if err == nil {
+		if respMap, ok := result.(map[string]interface{}); ok {
+			if v, ok := respMap["version"]; ok {
+				if vf, ok := v.(float64); ok {
+					version = int(vf)
+				}
+			}
+		}
+	}
+
+	c.mu.Lock()
+	c.cachedVersion = &version
+	c.mu.Unlock()
+
+	return version
+}
+
+// refreshVersion forces a server version re-fetch.
+func (c *ClobClient) refreshVersion() {
+	c.mu.Lock()
+	c.cachedVersion = nil
+	c.mu.Unlock()
+	c.resolveVersion()
+}
+
+// ensureMarketInfoCached ensures the clob market info is cached for the given token_id.
+func (c *ClobClient) ensureMarketInfoCached(tokenID string) error {
+	c.mu.RLock()
+	_, hasTick := c.tickSizes[tokenID]
+	_, hasCond := c.tokenConditionMap[tokenID]
+	c.mu.RUnlock()
+
+	if hasTick && hasCond {
+		return nil
+	}
+
+	// If we know the condition_id from token -> condition map, use it
+	c.mu.RLock()
+	condID, hasCond := c.tokenConditionMap[tokenID]
+	c.mu.RUnlock()
+
+	if hasCond {
+		_, err := c.GetClobMarketInfo(condID)
+		return err
+	}
+
+	return nil
 }
 
 // assertLevel1Auth 断言需要L1认证
@@ -187,7 +266,7 @@ func (c *ClobClient) GetRFQ() *rfq.RfqClient {
 	return c.rfq
 }
 
-// CreateLevel2HeadersInternal 创建L2认证头（供RFQ客户端使用，避免循环导入）
+// CreateLevel2HeadersInternal 创建L2认证头（供RFQ客户端使用）
 func (c *ClobClient) CreateLevel2HeadersInternal(method, path string, body interface{}) (map[string]string, error) {
 	var bodyStr string
 	if body != nil {
@@ -197,11 +276,11 @@ func (c *ClobClient) CreateLevel2HeadersInternal(method, path string, body inter
 		}
 		bodyStr = string(bodyJSON)
 	}
-	
+
 	requestArgs := &RequestArgs{
-		Method:        method,
-		RequestPath:   path,
-		Body:          body,
+		Method:         method,
+		RequestPath:    path,
+		Body:           body,
 		SerializedBody: &bodyStr,
 	}
 
@@ -221,9 +300,8 @@ func (c *ClobClient) GetAPICreds() string {
 	return ""
 }
 
-// CreateOrderForRFQ 为RFQ创建签名订单（供RFQ客户端使用，避免循环导入）
+// CreateOrderForRFQ 为RFQ创建签名订单（供RFQ客户端使用）
 func (c *ClobClient) CreateOrderForRFQ(args *rfq.OrderCreationArgs) (*rfq.SignedOrderData, error) {
-	// 创建订单参数
 	orderArgs := &OrderArgs{
 		TokenID:    args.TokenID,
 		Price:      args.Price,
@@ -232,33 +310,38 @@ func (c *ClobClient) CreateOrderForRFQ(args *rfq.OrderCreationArgs) (*rfq.Signed
 		Expiration: args.Expiration,
 	}
 
-	// 创建签名订单
 	signedOrder, err := c.CreateOrder(orderArgs, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	// 将 side 转换为字符串
-	sideStr := "BUY"
-	if signedOrder.Side.Int64() == 1 {
-		sideStr = "SELL"
+	signedOrderV2, ok := signedOrder.(*SignedOrderV2)
+	if !ok {
+		return nil, fmt.Errorf("expected v2 signed order")
 	}
 
-	// 转换为 RFQ 需要的格式
+	sideStr := signedOrderV2.Side
+	if sideStr == "" {
+		if signedOrderV2.SideValue == 1 {
+			sideStr = "SELL"
+		} else {
+			sideStr = "BUY"
+		}
+	}
+
 	return &rfq.SignedOrderData{
-		Salt:          signedOrder.Salt.Int64(),
-		Maker:         signedOrder.Maker.Hex(),
-		Signer:        signedOrder.Signer.Hex(),
-		Taker:         signedOrder.Taker.Hex(),
-		TokenID:       signedOrder.TokenId.String(),
-		MakerAmount:   signedOrder.MakerAmount.String(),
-		TakerAmount:   signedOrder.TakerAmount.String(),
-		Expiration:    signedOrder.Expiration.String(),
-		Nonce:         signedOrder.Nonce.String(),
-		FeeRateBps:    signedOrder.FeeRateBps.String(),
+		Salt:          parseBigIntOrZero(signedOrderV2.Salt),
+		Maker:         signedOrderV2.Maker,
+		Signer:        signedOrderV2.Signer,
+		TokenID:       signedOrderV2.TokenId,
+		MakerAmount:   signedOrderV2.MakerAmount,
+		TakerAmount:   signedOrderV2.TakerAmount,
+		Expiration:    signedOrderV2.Expiration,
 		Side:          sideStr,
-		SignatureType: int(signedOrder.SignatureType.Int64()),
-		Signature:     "0x" + common.Bytes2Hex(signedOrder.Signature),
+		SignatureType: signedOrderV2.SignatureType,
+		Timestamp:     signedOrderV2.Timestamp,
+		Metadata:      signedOrderV2.Metadata,
+		Builder:       signedOrderV2.Builder,
+		Signature:     signedOrderV2.Signature,
 	}, nil
 }
-

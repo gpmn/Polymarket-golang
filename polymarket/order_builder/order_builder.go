@@ -4,253 +4,364 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/polymarket/go-order-utils/pkg/builder"
+	"github.com/polymarket/go-order-utils/pkg/eip712"
 	"github.com/polymarket/go-order-utils/pkg/model"
 )
 
-// Signer 签名器接口（避免循环导入）
+// Signer is the signer interface for the order builder.
 type Signer interface {
 	Address() string
 	GetChainID() int
 	GetPrivateKey() string
 }
 
-// OrderBuilder 订单构建器
+// OrderBuilder builds and signs orders for the Polymarket CLOB.
 type OrderBuilder struct {
 	signer  Signer
 	sigType int
 	funder  string
 }
 
-// NewOrderBuilder 创建新的订单构建器
-func NewOrderBuilder(signer Signer, sigType int, funder string) (*OrderBuilder, error) {
-	if signer == nil {
+// NewOrderBuilder creates a new OrderBuilder.
+func NewOrderBuilder(s Signer, sigType int, funder string) (*OrderBuilder, error) {
+	if s == nil {
 		return nil, fmt.Errorf("signer is required")
 	}
-
 	if funder == "" {
-		funder = signer.Address()
+		funder = s.Address()
 	}
-
-	return &OrderBuilder{
-		signer:  signer,
-		sigType: sigType,
-		funder:  funder,
-	}, nil
+	return &OrderBuilder{signer: s, sigType: sigType, funder: funder}, nil
 }
 
-// GetOrderAmounts 获取订单金额（限价订单）
+// ---- Rounding helpers ----
+
+// RoundConfig defines decimal rounding precision.
+type RoundConfig struct {
+	Price  int
+	Size   int
+	Amount int
+}
+
+// RoundingConfig maps tick sizes to rounding configurations.
+var RoundingConfig = map[string]RoundConfig{
+	"0.1":    {Price: 1, Size: 2, Amount: 3},
+	"0.01":   {Price: 2, Size: 2, Amount: 4},
+	"0.001":  {Price: 3, Size: 2, Amount: 5},
+	"0.0001": {Price: 4, Size: 2, Amount: 6},
+}
+
+// GetOrderAmounts computes maker/taker amounts for limit orders.
 func (ob *OrderBuilder) GetOrderAmounts(side string, size, price float64, roundConfig RoundConfig) (model.Side, *big.Int, *big.Int, error) {
 	rawPrice := RoundNormal(price, roundConfig.Price)
 
 	if side == "BUY" {
 		rawTakerAmt := RoundDown(size, roundConfig.Size)
 		rawMakerAmt := rawTakerAmt * rawPrice
-
 		if DecimalPlaces(rawMakerAmt) > roundConfig.Amount {
 			rawMakerAmt = RoundUp(rawMakerAmt, roundConfig.Amount+4)
 			if DecimalPlaces(rawMakerAmt) > roundConfig.Amount {
 				rawMakerAmt = RoundDown(rawMakerAmt, roundConfig.Amount)
 			}
 		}
+		return model.BUY, big.NewInt(ToTokenDecimals(rawMakerAmt)), big.NewInt(ToTokenDecimals(rawTakerAmt)), nil
+	}
 
-		makerAmount := big.NewInt(ToTokenDecimals(rawMakerAmt))
-		takerAmount := big.NewInt(ToTokenDecimals(rawTakerAmt))
-
-		return model.BUY, makerAmount, takerAmount, nil
-	} else if side == "SELL" {
+	if side == "SELL" {
 		rawMakerAmt := RoundDown(size, roundConfig.Size)
 		rawTakerAmt := rawMakerAmt * rawPrice
-
 		if DecimalPlaces(rawTakerAmt) > roundConfig.Amount {
 			rawTakerAmt = RoundUp(rawTakerAmt, roundConfig.Amount+4)
 			if DecimalPlaces(rawTakerAmt) > roundConfig.Amount {
 				rawTakerAmt = RoundDown(rawTakerAmt, roundConfig.Amount)
 			}
 		}
-
-		makerAmount := big.NewInt(ToTokenDecimals(rawMakerAmt))
-		takerAmount := big.NewInt(ToTokenDecimals(rawTakerAmt))
-
-		return model.SELL, makerAmount, takerAmount, nil
+		return model.SELL, big.NewInt(ToTokenDecimals(rawMakerAmt)), big.NewInt(ToTokenDecimals(rawTakerAmt)), nil
 	}
 
-	return 0, nil, nil, fmt.Errorf("order_args.side must be 'BUY' or 'SELL'")
+	return 0, nil, nil, fmt.Errorf("side must be BUY or SELL")
 }
 
-// GetMarketOrderAmounts 获取市价订单金额
-// 精度要求（来自 Polymarket API）：
-// - BUY 订单：maker amount (USDC) 最多 4 位小数，taker amount (代币) 最多 2 位小数
-// - SELL 订单：maker amount (代币) 最多 2 位小数，taker amount (USDC) 最多 4 位小数
+// GetMarketOrderAmounts computes maker/taker amounts for market orders.
+// V2: uses RoundDown for price (v1 used RoundNormal).
 func (ob *OrderBuilder) GetMarketOrderAmounts(side string, amount, price float64, roundConfig RoundConfig) (model.Side, *big.Int, *big.Int, error) {
-	rawPrice := RoundNormal(price, roundConfig.Price)
+	rawPrice := RoundDown(price, roundConfig.Price)
 
 	if side == "BUY" {
-		// BUY: maker = USDC (最多 Amount 位小数), taker = 代币数量 (最多 Size 位小数)
 		rawMakerAmt := RoundDown(amount, roundConfig.Size)
 		rawTakerAmt := rawMakerAmt / rawPrice
-
-		// taker amount（代币数量）必须舍入到 Size 位小数（通常是 2 位）
-		if DecimalPlaces(rawTakerAmt) > roundConfig.Size {
-			rawTakerAmt = RoundDown(rawTakerAmt, roundConfig.Size)
-		}
-
-		makerAmount := big.NewInt(ToTokenDecimals(rawMakerAmt))
-		takerAmount := big.NewInt(ToTokenDecimals(rawTakerAmt))
-
-		return model.BUY, makerAmount, takerAmount, nil
-	} else if side == "SELL" {
-		// SELL: maker = 代币数量 (最多 Size 位小数), taker = USDC (最多 Amount 位小数)
-		rawMakerAmt := RoundDown(amount, roundConfig.Size)
-		rawTakerAmt := rawMakerAmt * rawPrice
-
-		// taker amount（USDC）可以有 Amount 位小数（通常是 4 位）
 		if DecimalPlaces(rawTakerAmt) > roundConfig.Amount {
-			rawTakerAmt = RoundDown(rawTakerAmt, roundConfig.Amount)
+			rawTakerAmt = RoundUp(rawTakerAmt, roundConfig.Amount+4)
+			if DecimalPlaces(rawTakerAmt) > roundConfig.Amount {
+				rawTakerAmt = RoundDown(rawTakerAmt, roundConfig.Amount)
+			}
 		}
-
-		makerAmount := big.NewInt(ToTokenDecimals(rawMakerAmt))
-		takerAmount := big.NewInt(ToTokenDecimals(rawTakerAmt))
-
-		return model.SELL, makerAmount, takerAmount, nil
+		return model.BUY, big.NewInt(ToTokenDecimals(rawMakerAmt)), big.NewInt(ToTokenDecimals(rawTakerAmt)), nil
 	}
 
-	return 0, nil, nil, fmt.Errorf("order_args.side must be 'BUY' or 'SELL'")
+	if side == "SELL" {
+		rawMakerAmt := RoundDown(amount, roundConfig.Size)
+		rawTakerAmt := rawMakerAmt * rawPrice
+		if DecimalPlaces(rawTakerAmt) > roundConfig.Amount {
+			rawTakerAmt = RoundUp(rawTakerAmt, roundConfig.Amount+4)
+			if DecimalPlaces(rawTakerAmt) > roundConfig.Amount {
+				rawTakerAmt = RoundDown(rawTakerAmt, roundConfig.Amount)
+			}
+		}
+		return model.SELL, big.NewInt(ToTokenDecimals(rawMakerAmt)), big.NewInt(ToTokenDecimals(rawTakerAmt)), nil
+	}
+
+	return 0, nil, nil, fmt.Errorf("side must be BUY or SELL")
 }
 
-// CreateOrder 创建并签名订单（限价订单）
-func (ob *OrderBuilder) CreateOrder(orderArgs interface{}, options interface{}) (*model.SignedOrder, error) {
-	// 这里需要从主包传入类型，暂时使用interface{}
-	// 实际使用时需要类型断言
-	return nil, fmt.Errorf("CreateOrder需要从主包调用，传入正确的类型")
-}
+// ---- Market price calculation ----
 
-// CreateMarketOrder 创建并签名市价订单
-func (ob *OrderBuilder) CreateMarketOrder(orderArgs interface{}, options interface{}) (*model.SignedOrder, error) {
-	// 这里需要从主包传入类型，暂时使用interface{}
-	// 实际使用时需要类型断言
-	return nil, fmt.Errorf("CreateMarketOrder需要从主包调用，传入正确的类型")
-}
-
-// OrderSummary 订单摘要接口（避免循环导入）
+// OrderSummary is the interface for order book entries.
 type OrderSummary interface {
 	GetPrice() string
 	GetSize() string
 }
 
-// CalculateBuyMarketPrice 计算买入市价
+// CalculateBuyMarketPrice computes the market buy price.
 func (ob *OrderBuilder) CalculateBuyMarketPrice(positions []interface{}, amountToMatch float64, orderType string) (float64, error) {
 	if len(positions) == 0 {
 		return 0, fmt.Errorf("no match")
 	}
-
 	sum := 0.0
 	for i := len(positions) - 1; i >= 0; i-- {
 		pos, ok := positions[i].(OrderSummary)
 		if !ok {
 			continue
 		}
-
 		price, _ := strconv.ParseFloat(pos.GetPrice(), 64)
 		size, _ := strconv.ParseFloat(pos.GetSize(), 64)
 		sum += size * price
-
 		if sum >= amountToMatch {
 			return price, nil
 		}
 	}
-
 	if orderType == "FOK" {
 		return 0, fmt.Errorf("no match")
 	}
-
-	// 返回第一个价格
 	if pos, ok := positions[0].(OrderSummary); ok {
-		price, _ := strconv.ParseFloat(pos.GetPrice(), 64)
-		return price, nil
+		p, _ := strconv.ParseFloat(pos.GetPrice(), 64)
+		return p, nil
 	}
-
 	return 0, fmt.Errorf("invalid position format")
 }
 
-// CalculateSellMarketPrice 计算卖出市价
+// CalculateSellMarketPrice computes the market sell price.
 func (ob *OrderBuilder) CalculateSellMarketPrice(positions []interface{}, amountToMatch float64, orderType string) (float64, error) {
 	if len(positions) == 0 {
 		return 0, fmt.Errorf("no match")
 	}
-
 	sum := 0.0
 	for i := len(positions) - 1; i >= 0; i-- {
 		pos, ok := positions[i].(OrderSummary)
 		if !ok {
 			continue
 		}
-
 		size, _ := strconv.ParseFloat(pos.GetSize(), 64)
 		sum += size
-
 		if sum >= amountToMatch {
-			price, _ := strconv.ParseFloat(pos.GetPrice(), 64)
-			return price, nil
+			p, _ := strconv.ParseFloat(pos.GetPrice(), 64)
+			return p, nil
 		}
 	}
-
 	if orderType == "FOK" {
 		return 0, fmt.Errorf("no match")
 	}
-
-	// 返回第一个价格
 	if pos, ok := positions[0].(OrderSummary); ok {
-		price, _ := strconv.ParseFloat(pos.GetPrice(), 64)
-		return price, nil
+		p, _ := strconv.ParseFloat(pos.GetPrice(), 64)
+		return p, nil
 	}
-
 	return 0, fmt.Errorf("invalid position format")
 }
 
-// BuildSignedOrder 构建已签名订单（导出方法，供主包使用）
+// ---- V1 order building (delegates to go-order-utils) ----
+
+// BuildSignedOrder builds and signs a v1 order.
 func (ob *OrderBuilder) BuildSignedOrder(orderData *model.OrderData, exchangeAddr string, chainID int, negRisk bool) (*model.SignedOrder, error) {
-	// 解析私钥
 	privateKeyHex := ob.signer.GetPrivateKey()
-	// 移除0x前缀（如果有）
 	if len(privateKeyHex) > 2 && privateKeyHex[:2] == "0x" {
 		privateKeyHex = privateKeyHex[2:]
 	}
-
 	privateKey, err := crypto.HexToECDSA(privateKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
-
-	// 创建订单构建器
 	chainIDBig := big.NewInt(int64(chainID))
 	orderBuilder := builder.NewExchangeOrderBuilderImpl(chainIDBig, nil)
 
-	// VerifyingContract是int类型：CTFExchange=0, NegRiskCTFExchange=1
 	var contract model.VerifyingContract
 	if negRisk {
 		contract = model.NegRiskCTFExchange
 	} else {
 		contract = model.CTFExchange
 	}
+	return orderBuilder.BuildSignedOrder(privateKey, orderData, contract)
+}
 
-	// 构建并签名订单
-	signedOrder, err := orderBuilder.BuildSignedOrder(privateKey, orderData, contract)
+// ---- V2 EIP-712 constants ----
+
+var (
+	v2DomainName    = crypto.Keccak256Hash([]byte("Polymarket CTF Exchange"))
+	v2DomainVersion = crypto.Keccak256Hash([]byte("2"))
+
+	v2OrderStructHash = crypto.Keccak256Hash([]byte(
+		"Order(uint256 salt,address maker,address signer,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,uint256 timestamp,bytes32 metadata,bytes32 builder)",
+	))
+
+	v2OrderTypes = []abi.Type{
+		eip712.Bytes32, // typehash
+		eip712.Uint256, // salt
+		eip712.Address, // maker
+		eip712.Address, // signer
+		eip712.Uint256, // tokenId
+		eip712.Uint256, // makerAmount
+		eip712.Uint256, // takerAmount
+		eip712.Uint8,   // side
+		eip712.Uint8,   // signatureType
+		eip712.Uint256, // timestamp
+		eip712.Bytes32, // metadata
+		eip712.Bytes32, // builder
+	}
+)
+
+// SignedOrderV2Data holds the fields of a v2 signed order.
+type SignedOrderV2Data struct {
+	Salt          string
+	Maker         string
+	Signer        string
+	TokenId       string
+	MakerAmount   string
+	TakerAmount   string
+	Side          int // 0=BUY, 1=SELL
+	Expiration    string
+	SignatureType int
+	Timestamp     string
+	Metadata      string
+	Builder       string
+	Signature     string
+}
+
+// BuildSignedOrderV2 builds and signs a v2 order using EIP-712.
+func (ob *OrderBuilder) BuildSignedOrderV2(orderData *SignedOrderV2Data, exchangeAddr string) (*SignedOrderV2Data, error) {
+	chainID := big.NewInt(int64(ob.signer.GetChainID()))
+	verifyingContract := common.HexToAddress(exchangeAddr)
+
+	domainSeparator, err := eip712.BuildEIP712DomainSeparator(
+		v2DomainName, v2DomainVersion, chainID, verifyingContract,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build signed order: %w", err)
+		return nil, fmt.Errorf("domain separator: %w", err)
 	}
 
-	return signedOrder, nil
+	// Parse big.Int fields
+	salt, ok := new(big.Int).SetString(orderData.Salt, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid salt: %s", orderData.Salt)
+	}
+	tokenId, ok := new(big.Int).SetString(orderData.TokenId, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid tokenId: %s", orderData.TokenId)
+	}
+	makerAmount, ok := new(big.Int).SetString(orderData.MakerAmount, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid makerAmount: %s", orderData.MakerAmount)
+	}
+	takerAmount, ok := new(big.Int).SetString(orderData.TakerAmount, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid takerAmount: %s", orderData.TakerAmount)
+	}
+	timestamp, ok := new(big.Int).SetString(orderData.Timestamp, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid timestamp: %s", orderData.Timestamp)
+	}
+
+	// Parse bytes32 fields (preserve the full 32-byte hex value)
+	metadataB32 := hexToBytes32(orderData.Metadata)
+	builderB32 := hexToBytes32(orderData.Builder)
+
+	values := []interface{}{
+		v2OrderStructHash,
+		salt,
+		common.HexToAddress(orderData.Maker),
+		common.HexToAddress(orderData.Signer),
+		tokenId,
+		makerAmount,
+		takerAmount,
+		uint8(orderData.Side),
+		uint8(orderData.SignatureType),
+		timestamp,
+		metadataB32,
+		builderB32,
+	}
+
+	orderHash, err := eip712.HashTypedDataV4(domainSeparator, v2OrderTypes, values)
+	if err != nil {
+		return nil, fmt.Errorf("hash typed data: %w", err)
+	}
+
+	// Sign
+	privateKeyHex := ob.signer.GetPrivateKey()
+	if len(privateKeyHex) > 2 && privateKeyHex[:2] == "0x" {
+		privateKeyHex = privateKeyHex[2:]
+	}
+	privateKey, err := crypto.HexToECDSA(privateKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("private key: %w", err)
+	}
+	sig, err := crypto.Sign(orderHash.Bytes(), privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("sign: %w", err)
+	}
+	sig[64] += 27 // Ethereum replay protection
+
+	result := *orderData
+	result.Signature = "0x" + common.Bytes2Hex(sig)
+	return &result, nil
 }
 
-// GetSigType 获取签名类型
-func (ob *OrderBuilder) GetSigType() int {
-	return ob.sigType
+// hexToBytes32 converts a 0x-prefixed hex string to [32]byte.
+func hexToBytes32(hexStr string) [32]byte {
+	var result [32]byte
+	if len(hexStr) >= 2 && hexStr[:2] == "0x" {
+		hexStr = hexStr[2:]
+	}
+	b := common.FromHex("0x" + hexStr)
+	copy(result[:], b[:])
+	return result
 }
 
-// GetFunder 获取资金持有者地址
-func (ob *OrderBuilder) GetFunder() string {
-	return ob.funder
+// ---- Accessors ----
+
+// GetSigType returns the signature type.
+func (ob *OrderBuilder) GetSigType() int { return ob.sigType }
+
+// GetFunder returns the funder address.
+func (ob *OrderBuilder) GetFunder() string { return ob.funder }
+
+// GetSigner returns the signer.
+func (ob *OrderBuilder) GetSigner() Signer { return ob.signer }
+
+// ---- Timestamp generator ----
+
+// CurrentTimestampMs returns the current Unix time in milliseconds.
+func CurrentTimestampMs() string {
+	return strconv.FormatInt(time.Now().UnixMilli(), 10)
+}
+
+// GenerateSalt returns a random salt as a string.
+func GenerateSalt() string {
+	salt := crypto.Keccak256Hash(
+		[]byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Nanosecond())),
+	)
+	saltBig := new(big.Int).SetBytes(salt[:16]) // use first 16 bytes as entropy
+	return saltBig.String()
 }

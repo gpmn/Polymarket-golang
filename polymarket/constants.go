@@ -54,10 +54,20 @@ const (
 
 // Signature types
 const (
-	SignatureTypeEOA = 0 // Externally Owned Account
-	SignatureTypeEmail = 1 // Email/Magic wallet
+	SignatureTypeEOA     = 0 // Externally Owned Account
+	SignatureTypeEmail   = 1 // Email/Magic wallet
 	SignatureTypeBrowser = 2 // Browser wallet proxy
+	SignatureTypePoly1271 = 3 // EIP-1271 smart contract wallets/vaults
 )
+
+// BYTES32_ZERO represents a zero bytes32 value
+const BYTES32_ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+// INITIAL_CURSOR is the initial pagination cursor
+const INITIAL_CURSOR = "MA=="
+
+// ORDER_VERSION_MISMATCH_ERROR indicates the server rejected the order version
+const ORDER_VERSION_MISMATCH_ERROR = "order_version_mismatch"
 
 // Header names
 const (

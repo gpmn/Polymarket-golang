@@ -12,14 +12,13 @@ import (
 )
 
 func main() {
-	// 从环境变量获取配置
 	host := os.Getenv("CLOB_HOST")
 	if host == "" {
-		host = "https://clob.polymarket.com" // 默认值
+		host = "https://clob.polymarket.com"
 	}
 
 	chainIDStr := os.Getenv("CHAIN_ID")
-	chainID := 137 // 默认Polygon主网
+	chainID := 137
 	if chainIDStr != "" {
 		fmt.Sscanf(chainIDStr, "%d", &chainID)
 	}
@@ -29,36 +28,28 @@ func main() {
 		log.Fatalf("错误: 必须设置 PRIVATE_KEY 环境变量")
 	}
 
-	funder := os.Getenv("FUNDER") // 可选，用于代理钱包
+	funder := os.Getenv("FUNDER")
 
-	// 获取签名类型（Magic钱包使用1，EOA使用0）
 	signatureTypeStr := os.Getenv("SIGNATURE_TYPE")
-	signatureType := 0 // 默认EOA
+	signatureType := 0
 	if signatureTypeStr != "" {
 		fmt.Sscanf(signatureTypeStr, "%d", &signatureType)
 	}
 	sigTypePtr := &signatureType
 
-	// 创建客户端
 	client, err := polymarket.NewClobClient(
-		host,
-		chainID,
-		privateKey,
-		nil,        // 初始时没有API凭证
-		sigTypePtr, // 签名类型（0=EOA, 1=Magic/Email, 2=Browser proxy）
-		funder,
+		host, chainID, privateKey, nil, sigTypePtr, funder,
 	)
 	if err != nil {
 		log.Fatalf("创建客户端失败: %v", err)
 	}
 
-	fmt.Println("=== Polymarket 下单示例 ===")
+	fmt.Println("=== Polymarket 下单示例 (v2) ===")
 	fmt.Printf("地址: %s\n", client.GetAddress())
 	fmt.Printf("链ID: %d\n", chainID)
-	fmt.Printf("签名类型: %d (0=EOA, 1=Magic/Email, 2=Browser)\n", signatureType)
+	fmt.Printf("签名类型: %d (0=EOA, 1=PolyProxy, 2=GnosisSafe, 3=Poly1271)\n", signatureType)
 	fmt.Println()
 
-	// 检查是否需要创建或派生API凭证
 	apiKey := os.Getenv("CLOB_API_KEY")
 	apiSecret := os.Getenv("CLOB_SECRET")
 	apiPassphrase := os.Getenv("CLOB_PASSPHRASE")
@@ -75,7 +66,6 @@ func main() {
 	} else {
 		fmt.Println("未找到API凭证，正在创建或派生...")
 		nonce := 0
-		var err error
 		creds, err = client.DeriveAPIKey(&nonce)
 		if err != nil {
 			fmt.Println("派生失败，尝试创建新的API密钥...")
@@ -93,26 +83,23 @@ func main() {
 		}
 	}
 
-	// 获取订单参数
 	tokenID := os.Getenv("TOKEN_ID")
 	if tokenID == "" {
-		log.Fatalf("错误: 必须设置 TOKEN_ID 环境变量（条件代币资产ID）")
+		log.Fatalf("错误: 必须设置 TOKEN_ID 环境变量")
 	}
 
 	orderSide := os.Getenv("ORDER_SIDE")
 	if orderSide == "" {
-		orderSide = "BUY" // 默认买入
+		orderSide = "BUY"
 	}
 	if orderSide != "BUY" && orderSide != "SELL" {
 		log.Fatalf("错误: ORDER_SIDE 必须是 BUY 或 SELL")
 	}
 
-	// 判断是限价订单还是市价订单
-	orderType := os.Getenv("ORDER_TYPE") // "LIMIT" 或 "MARKET"
+	orderType := os.Getenv("ORDER_TYPE")
 	useMarketOrder := orderType == "MARKET"
 
 	if useMarketOrder {
-		// 市价订单
 		fmt.Println("\n=== 创建市价订单 ===")
 
 		amountStr := os.Getenv("AMOUNT")
@@ -124,33 +111,21 @@ func main() {
 			log.Fatalf("错误: AMOUNT 必须是有效的数字: %v", err)
 		}
 
-		// 获取订单类型（GTC, FOK, FAK）
 		orderTypeStr := os.Getenv("MARKET_ORDER_TYPE")
 		if orderTypeStr == "" {
-			orderTypeStr = "GTC" // 默认Good Till Cancel
+			orderTypeStr = "FOK"
 		}
 		marketOrderType := polymarket.OrderType(orderTypeStr)
 
-		// 获取nonce
-		nonceStr := os.Getenv("NONCE")
-		nonce := 0
-		if nonceStr != "" {
-			nonce, err = strconv.Atoi(nonceStr)
-			if err != nil {
-				log.Fatalf("错误: NONCE 必须是有效的整数: %v", err)
-			}
-		}
+		builderCode := os.Getenv("BUILDER_CODE")
 
-		// 创建市价订单参数
 		marketOrderArgs := &polymarket.MarketOrderArgs{
-			TokenID:    tokenID,
-			Amount:     amount,
-			Side:       orderSide,
-			Price:      0, // 市价订单，价格会自动计算
-			FeeRateBps: 0, // 会自动从市场获取
-			Nonce:      nonce,
-			Taker:      "", // 空字符串表示公开订单
-			OrderType:  marketOrderType,
+			TokenID:     tokenID,
+			Amount:      amount,
+			Side:        orderSide,
+			Price:       0, // 自动计算
+			OrderType:   marketOrderType,
+			BuilderCode: builderCode,
 		}
 
 		fmt.Printf("订单参数:\n")
@@ -158,10 +133,8 @@ func main() {
 		fmt.Printf("  Side: %s\n", marketOrderArgs.Side)
 		fmt.Printf("  Amount: %.6f\n", marketOrderArgs.Amount)
 		fmt.Printf("  OrderType: %s\n", marketOrderType)
-		fmt.Printf("  Nonce: %d\n", marketOrderArgs.Nonce)
 		fmt.Println()
 
-		// 创建并签名订单
 		fmt.Println("正在创建并签名订单...")
 		signedOrder, err := client.CreateMarketOrder(marketOrderArgs, nil)
 		if err != nil {
@@ -169,9 +142,8 @@ func main() {
 		}
 
 		fmt.Println("✓ 订单创建成功")
-		printOrder(signedOrder)
+		printOrderV2(signedOrder)
 
-		// 提交订单
 		fmt.Println("\n正在提交订单到交易所...")
 		result, err := client.PostOrder(signedOrder, marketOrderType)
 		if err != nil {
@@ -182,7 +154,6 @@ func main() {
 		printResult(result)
 
 	} else {
-		// 限价订单
 		fmt.Println("\n=== 创建限价订单 ===")
 
 		priceStr := os.Getenv("PRICE")
@@ -203,25 +174,11 @@ func main() {
 			log.Fatalf("错误: SIZE 必须是有效的数字: %v", err)
 		}
 
-		// 获取nonce
-		nonceStr := os.Getenv("NONCE")
-		nonce := 0
-		if nonceStr != "" {
-			nonce, err = strconv.Atoi(nonceStr)
-			if err != nil {
-				log.Fatalf("错误: NONCE 必须是有效的整数: %v", err)
-			}
-		}
-
-		// 获取订单类型（GTD需要过期时间，GTC不需要）
 		limitOrderType := os.Getenv("LIMIT_ORDER_TYPE")
 		if limitOrderType == "" {
-			limitOrderType = "GTC" // 默认GTC
+			limitOrderType = "GTC"
 		}
 
-		// 获取过期时间
-		// GTC订单：expiration = 0
-		// GTD订单：需要设置过期时间
 		expiration := 0
 		if limitOrderType == "GTD" {
 			expirationStr := os.Getenv("EXPIRATION")
@@ -232,21 +189,19 @@ func main() {
 				}
 				expiration = exp
 			} else {
-				// GTD默认30天后过期
 				expiration = int(time.Now().Add(30 * 24 * time.Hour).Unix())
 			}
 		}
 
-		// 创建限价订单参数
+		builderCode := os.Getenv("BUILDER_CODE")
+
 		orderArgs := &polymarket.OrderArgs{
-			TokenID:    tokenID,
-			Price:      price,
-			Size:       size,
-			Side:       orderSide,
-			FeeRateBps: 0, // 会自动从市场获取
-			Nonce:      nonce,
-			Expiration: expiration,
-			Taker:      "", // 空字符串表示公开订单
+			TokenID:     tokenID,
+			Price:       price,
+			Size:        size,
+			Side:        orderSide,
+			Expiration:  expiration,
+			BuilderCode: builderCode,
 		}
 
 		fmt.Printf("订单参数:\n")
@@ -254,7 +209,6 @@ func main() {
 		fmt.Printf("  Side: %s\n", orderArgs.Side)
 		fmt.Printf("  Price: %.6f\n", orderArgs.Price)
 		fmt.Printf("  Size: %.6f\n", orderArgs.Size)
-		fmt.Printf("  Nonce: %d\n", orderArgs.Nonce)
 		fmt.Printf("  OrderType: %s\n", limitOrderType)
 		if orderArgs.Expiration > 0 {
 			fmt.Printf("  Expiration: %d (%s)\n", orderArgs.Expiration, time.Unix(int64(orderArgs.Expiration), 0).Format("2006-01-02 15:04:05"))
@@ -263,7 +217,6 @@ func main() {
 		}
 		fmt.Println()
 
-		// 方式1: 使用便捷方法（创建并提交）
 		useConvenienceMethod := os.Getenv("USE_CONVENIENCE") != "false"
 		if useConvenienceMethod {
 			fmt.Println("使用便捷方法 (CreateAndPostOrder)...")
@@ -274,7 +227,6 @@ func main() {
 			fmt.Println("✓ 订单创建并提交成功")
 			printResult(result)
 		} else {
-			// 方式2: 分步操作（先创建，再提交）
 			fmt.Println("正在创建并签名订单...")
 			signedOrder, err := client.CreateOrder(orderArgs, nil)
 			if err != nil {
@@ -282,9 +234,8 @@ func main() {
 			}
 
 			fmt.Println("✓ 订单创建成功")
-			printOrder(signedOrder)
+			printOrderV2(signedOrder)
 
-			// 提交订单
 			fmt.Println("\n正在提交订单到交易所...")
 			postOrderType := polymarket.OrderType(limitOrderType)
 			result, err := client.PostOrder(signedOrder, postOrderType)
@@ -300,18 +251,27 @@ func main() {
 	fmt.Println("\n=== 完成 ===")
 }
 
-// printOrder 打印订单信息
-func printOrder(order *polymarket.SignedOrder) {
+func printOrderV2(order interface{}) {
 	fmt.Println("\n订单详情:")
-	jsonData, err := json.MarshalIndent(order, "  ", "  ")
-	if err != nil {
-		fmt.Printf("  原始数据: %+v\n", order)
+	if v2Order, ok := order.(*polymarket.SignedOrderV2); ok {
+		fmt.Printf("  Salt: %s\n", v2Order.Salt)
+		fmt.Printf("  Maker: %s\n", v2Order.Maker)
+		fmt.Printf("  Signer: %s\n", v2Order.Signer)
+		fmt.Printf("  TokenId: %s\n", v2Order.TokenId)
+		fmt.Printf("  MakerAmount: %s\n", v2Order.MakerAmount)
+		fmt.Printf("  TakerAmount: %s\n", v2Order.TakerAmount)
+		fmt.Printf("  Side: %s\n", v2Order.Side)
+		fmt.Printf("  Expiration: %s\n", v2Order.Expiration)
+		fmt.Printf("  SignatureType: %d\n", v2Order.SignatureType)
+		fmt.Printf("  Timestamp: %s\n", v2Order.Timestamp)
+		fmt.Printf("  Builder: %s\n", v2Order.Builder)
+		fmt.Printf("  Signature: %s\n", v2Order.Signature)
 	} else {
+		jsonData, _ := json.MarshalIndent(order, "  ", "  ")
 		fmt.Println(string(jsonData))
 	}
 }
 
-// printResult 打印API响应结果
 func printResult(result interface{}) {
 	fmt.Println("\nAPI响应:")
 	jsonData, err := json.MarshalIndent(result, "  ", "  ")

@@ -32,28 +32,34 @@ var (
 
 // ChainConfig 链配置
 type ChainConfig struct {
-	ChainID           int64
-	Exchange          common.Address
-	Collateral        common.Address
-	ConditionalTokens common.Address
-	NegRiskExchange   common.Address
+	ChainID            int64
+	Exchange           common.Address // v1 exchange
+	Collateral         common.Address // pUSD (was USDC.e in v1)
+	ConditionalTokens  common.Address
+	NegRiskExchange    common.Address // v1 neg risk exchange
+	ExchangeV2         common.Address // v2 exchange
+	NegRiskExchangeV2  common.Address // v2 neg risk exchange
 }
 
 // 链配置映射
 var chainConfigs = map[int64]*ChainConfig{
 	137: { // Polygon 主网
-		ChainID:           137,
-		Exchange:          common.HexToAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"),
-		Collateral:        common.HexToAddress("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"),
-		ConditionalTokens: common.HexToAddress("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"),
-		NegRiskExchange:   common.HexToAddress("0xC5d563A36AE78145C45a50134d48A1215220f80a"),
+		ChainID:            137,
+		Exchange:           common.HexToAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"),
+		Collateral:         common.HexToAddress("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"), // pUSD
+		ConditionalTokens:  common.HexToAddress("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"),
+		NegRiskExchange:    common.HexToAddress("0xC5d563A36AE78145C45a50134d48A1215220f80a"),
+		ExchangeV2:         common.HexToAddress("0xE111180000d2663C0091e4f400237545B87B996B"),
+		NegRiskExchangeV2:  common.HexToAddress("0xe2222d279d744050d28e00520010520000310F59"),
 	},
 	80002: { // Amoy 测试网
-		ChainID:           80002,
-		Exchange:          common.HexToAddress("0xdFE02Eb6733538f8Ea35D585af8DE5958AD99E40"),
-		Collateral:        common.HexToAddress("0x9c4e1703476e875070ee25b56a58b008cfb8fa78"),
-		ConditionalTokens: common.HexToAddress("0x69308FB512518e39F9b16112fA8d994F4e2Bf8bB"),
-		NegRiskExchange:   common.HexToAddress("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"),
+		ChainID:            80002,
+		Exchange:           common.HexToAddress("0xdFE02Eb6733538f8Ea35D585af8DE5958AD99E40"),
+		Collateral:         common.HexToAddress("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"), // pUSD
+		ConditionalTokens:  common.HexToAddress("0x69308FB512518e39F9b16112fA8d994F4e2Bf8bB"),
+		NegRiskExchange:    common.HexToAddress("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"),
+		ExchangeV2:         common.HexToAddress("0xE111180000d2663C0091e4f400237545B87B996B"),
+		NegRiskExchangeV2:  common.HexToAddress("0xe2222d279d744050d28e00520010520000310F59"),
 	},
 }
 
@@ -86,13 +92,15 @@ type BaseWeb3Client struct {
 	Address common.Address
 
 	// 合约地址
-	USDCAddress              common.Address
-	ConditionalTokensAddress common.Address
-	ExchangeAddress          common.Address
-	NegRiskExchangeAddress   common.Address
-	NegRiskAdapterAddress    common.Address
-	ProxyFactoryAddress      common.Address
-	SafeProxyFactoryAddress  common.Address
+	USDCAddress               common.Address // collateral token (pUSD in v2)
+	ConditionalTokensAddress  common.Address
+	ExchangeAddress           common.Address // v1 exchange
+	NegRiskExchangeAddress    common.Address // v1 neg risk exchange
+	ExchangeV2Address         common.Address // v2 exchange
+	NegRiskExchangeV2Address  common.Address // v2 neg risk exchange
+	NegRiskAdapterAddress     common.Address
+	ProxyFactoryAddress       common.Address
+	SafeProxyFactoryAddress   common.Address
 }
 
 // NewBaseWeb3Client 创建基础 Web3 客户端
@@ -140,6 +148,8 @@ func NewBaseWeb3Client(
 		Collateral:        config.Collateral,
 		ConditionalTokens: config.ConditionalTokens,
 		NegRiskExchange:   config.NegRiskExchange,
+		ExchangeV2:        config.ExchangeV2,
+		NegRiskExchangeV2: config.NegRiskExchangeV2,
 	}
 
 	c := &BaseWeb3Client{
@@ -152,13 +162,15 @@ func NewBaseWeb3Client(
 		config:        config,
 		negRiskConfig: negRiskConfig,
 
-		USDCAddress:              config.Collateral,
-		ConditionalTokensAddress: config.ConditionalTokens,
-		ExchangeAddress:          config.Exchange,
-		NegRiskExchangeAddress:   config.NegRiskExchange,
-		NegRiskAdapterAddress:    NegRiskAdapterAddress,
-		ProxyFactoryAddress:      ProxyFactoryAddress,
-		SafeProxyFactoryAddress:  SafeProxyFactoryAddress,
+		USDCAddress:               config.Collateral,
+		ConditionalTokensAddress:  config.ConditionalTokens,
+		ExchangeAddress:           config.Exchange,
+		NegRiskExchangeAddress:    config.NegRiskExchange,
+		ExchangeV2Address:         config.ExchangeV2,
+		NegRiskExchangeV2Address:  config.NegRiskExchangeV2,
+		NegRiskAdapterAddress:     NegRiskAdapterAddress,
+		ProxyFactoryAddress:       ProxyFactoryAddress,
+		SafeProxyFactoryAddress:   SafeProxyFactoryAddress,
 	}
 
 	// 设置地址（根据签名类型）
