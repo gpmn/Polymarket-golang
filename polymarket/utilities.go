@@ -83,8 +83,17 @@ func OrderToJSONV2(order *SignedOrderV2, owner string, orderType OrderType, post
 		}
 	}
 
+	saltStr := order.Salt
+	if saltStr == "" {
+		saltStr = "0"
+	}
+	tsStr := order.Timestamp
+	if tsStr == "" {
+		tsStr = "0"
+	}
+
 	orderDict := map[string]interface{}{
-		"salt":          parseBigIntOrZero(order.Salt),
+		"salt":          saltStr,
 		"maker":         common.HexToAddress(order.Maker).Hex(),
 		"signer":        common.HexToAddress(order.Signer).Hex(),
 		"tokenId":       order.TokenId,
@@ -93,7 +102,7 @@ func OrderToJSONV2(order *SignedOrderV2, owner string, orderType OrderType, post
 		"side":          sideStr,
 		"expiration":    order.Expiration,
 		"signatureType": order.SignatureType,
-		"timestamp":     parseBigIntOrZero(order.Timestamp),
+		"timestamp":     tsStr,
 		"metadata":      order.Metadata,
 		"builder":       order.Builder,
 		"signature":     order.Signature,

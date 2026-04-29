@@ -330,7 +330,7 @@ func (c *ClobClient) CreateOrderForRFQ(args *rfq.OrderCreationArgs) (*rfq.Signed
 	}
 
 	return &rfq.SignedOrderData{
-		Salt:          parseBigIntOrZero(signedOrderV2.Salt),
+		Salt:          signedOrderV2.Salt,
 		Maker:         signedOrderV2.Maker,
 		Signer:        signedOrderV2.Signer,
 		TokenID:       signedOrderV2.TokenId,
