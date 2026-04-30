@@ -22,9 +22,11 @@ var (
 	HashZero    = common.Hash{}
 
 	// Polygon 主网合约地址
-	NegRiskAdapterAddress   = common.HexToAddress("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296")
-	ProxyFactoryAddress     = common.HexToAddress("0xaB45c5A4B0c941a2F231C04C3f49182e1A254052")
-	SafeProxyFactoryAddress = common.HexToAddress("0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b")
+	NegRiskAdapterAddress               = common.HexToAddress("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296")
+	CtfCollateralAdapterAddress         = common.HexToAddress("0xADa100874d00e3331D00F2007a9c336a65009718") // V2: wraps USDC.e→pUSD
+	NegRiskCtfCollateralAdapterAddress  = common.HexToAddress("0xAdA200001000ef00D07553cEE7006808F895c6F1") // V2: NegRisk variant
+	ProxyFactoryAddress                 = common.HexToAddress("0xaB45c5A4B0c941a2F231C04C3f49182e1A254052")
+	SafeProxyFactoryAddress             = common.HexToAddress("0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b")
 
 	// 默认 RPC 端点
 	DefaultPolygonRPC = "https://polygon-rpc.com"
@@ -45,12 +47,12 @@ type ChainConfig struct {
 var chainConfigs = map[int64]*ChainConfig{
 	137: { // Polygon 主网
 		ChainID:            137,
-		Exchange:           common.HexToAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"),
-		Collateral:         common.HexToAddress("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"), // pUSD
+		Exchange:           common.HexToAddress("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"), // V1 — 仅用于 GetPolyProxyAddress / getComplement 查询
+		Collateral:         common.HexToAddress("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"), // pUSD (V2)
 		ConditionalTokens:  common.HexToAddress("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"),
-		NegRiskExchange:    common.HexToAddress("0xC5d563A36AE78145C45a50134d48A1215220f80a"),
-		ExchangeV2:         common.HexToAddress("0xE111180000d2663C0091e4f400237545B87B996B"),
-		NegRiskExchangeV2:  common.HexToAddress("0xe2222d279d744050d28e00520010520000310F59"),
+		NegRiskExchange:    common.HexToAddress("0xC5d563A36AE78145C45a50134d48A1215220f80a"), // V1 — 仅用于 getComplement 查询
+		ExchangeV2:         common.HexToAddress("0xE111180000d2663C0091e4f400237545B87B996B"), // CTF Exchange V2
+		NegRiskExchangeV2:  common.HexToAddress("0xe2222d279d744050d28e00520010520000310F59"), // NegRisk CTF Exchange V2
 	},
 	80002: { // Amoy 测试网
 		ChainID:            80002,
@@ -92,15 +94,17 @@ type BaseWeb3Client struct {
 	Address common.Address
 
 	// 合约地址
-	USDCAddress               common.Address // collateral token (pUSD in v2)
-	ConditionalTokensAddress  common.Address
-	ExchangeAddress           common.Address // v1 exchange
-	NegRiskExchangeAddress    common.Address // v1 neg risk exchange
-	ExchangeV2Address         common.Address // v2 exchange
-	NegRiskExchangeV2Address  common.Address // v2 neg risk exchange
-	NegRiskAdapterAddress     common.Address
-	ProxyFactoryAddress       common.Address
-	SafeProxyFactoryAddress   common.Address
+	USDCAddress                        common.Address // collateral token (pUSD in v2)
+	ConditionalTokensAddress           common.Address
+	ExchangeAddress                    common.Address // v1 exchange
+	NegRiskExchangeAddress             common.Address // v1 neg risk exchange
+	ExchangeV2Address                  common.Address // v2 exchange
+	NegRiskExchangeV2Address           common.Address // v2 neg risk exchange
+	NegRiskAdapterAddress              common.Address
+	CtfCollateralAdapterAddress        common.Address // V2: wraps USDC.e→pUSD for CTF redeem
+	NegRiskCtfCollateralAdapterAddress common.Address // V2: NegRisk variant
+	ProxyFactoryAddress                common.Address
+	SafeProxyFactoryAddress            common.Address
 }
 
 // NewBaseWeb3Client 创建基础 Web3 客户端
@@ -168,8 +172,10 @@ func NewBaseWeb3Client(
 		NegRiskExchangeAddress:    config.NegRiskExchange,
 		ExchangeV2Address:         config.ExchangeV2,
 		NegRiskExchangeV2Address:  config.NegRiskExchangeV2,
-		NegRiskAdapterAddress:     NegRiskAdapterAddress,
-		ProxyFactoryAddress:       ProxyFactoryAddress,
+		NegRiskAdapterAddress:              NegRiskAdapterAddress,
+		CtfCollateralAdapterAddress:        CtfCollateralAdapterAddress,
+		NegRiskCtfCollateralAdapterAddress: NegRiskCtfCollateralAdapterAddress,
+		ProxyFactoryAddress:                ProxyFactoryAddress,
 		SafeProxyFactoryAddress:   SafeProxyFactoryAddress,
 	}
 
@@ -531,6 +537,67 @@ func (c *BaseWeb3Client) encodeSplit(conditionID common.Hash, amount *big.Int) (
 // encodeMerge 编码合并仓位交易
 func (c *BaseWeb3Client) encodeMerge(conditionID common.Hash, amount *big.Int) ([]byte, error) {
 	return ConditionalTokensABI.Pack("mergePositions", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)}, amount)
+}
+
+// CheckPayoutsReported 检查 conditionId 的 payout 是否已上链
+// 返回 true 表示至少有一个 outcome 的 payout > 0
+func (c *BaseWeb3Client) CheckPayoutsReported(conditionID common.Hash) (bool, error) {
+	outcomeCount := uint8(2) // 默认二元市场
+	data, err := ConditionalTokensABI.Pack("getOutcomeSlotCount", conditionID)
+	if err == nil {
+		result, callErr := c.callContract(context.Background(), &c.ConditionalTokensAddress, data)
+		if callErr == nil {
+			var count *big.Int
+			if unpackErr := ConditionalTokensABI.UnpackIntoInterface(&count, "getOutcomeSlotCount", result); unpackErr == nil {
+				outcomeCount = uint8(count.Uint64())
+			}
+		}
+	}
+
+	for i := uint8(0); i < outcomeCount; i++ {
+		data, err := ConditionalTokensABI.Pack("payoutNumerators", conditionID, big.NewInt(int64(i)))
+		if err != nil {
+			continue
+		}
+		result, callErr := c.callContract(context.Background(), &c.ConditionalTokensAddress, data)
+		if callErr != nil {
+			continue
+		}
+		var payout *big.Int
+		if unpackErr := ConditionalTokensABI.UnpackIntoInterface(&payout, "payoutNumerators", result); unpackErr == nil {
+			if payout.Sign() > 0 {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// GetTokenIDForCondition 计算 conditionId + indexSet 对应的 ERC-1155 token ID
+func (c *BaseWeb3Client) GetTokenIDForCondition(conditionID common.Hash, indexSet *big.Int) (*big.Int, error) {
+	data, err := ConditionalTokensABI.Pack("getCollectionId", HashZero, conditionID, indexSet)
+	if err != nil {
+		return nil, fmt.Errorf("pack getCollectionId failed: %w", err)
+	}
+	result, err := c.callContract(context.Background(), &c.ConditionalTokensAddress, data)
+	if err != nil {
+		return nil, fmt.Errorf("getCollectionId call failed: %w", err)
+	}
+	var collectionID [32]byte
+	if err := ConditionalTokensABI.UnpackIntoInterface(&collectionID, "getCollectionId", result); err != nil {
+		return nil, fmt.Errorf("unpack getCollectionId failed: %w", err)
+	}
+	tokenID := new(big.Int).SetBytes(collectionID[:])
+	return tokenID, nil
+}
+
+// GetConditionTokenBalance 获取用户在某个 condition + indexSet 下的 token 余额
+func (c *BaseWeb3Client) GetConditionTokenBalance(conditionID common.Hash, indexSet *big.Int, holder common.Address) (*big.Float, error) {
+	tokenID, err := c.GetTokenIDForCondition(conditionID, indexSet)
+	if err != nil {
+		return nil, err
+	}
+	return c.GetTokenBalance(tokenID.String(), holder)
 }
 
 // encodeRedeem 编码赎回仓位交易

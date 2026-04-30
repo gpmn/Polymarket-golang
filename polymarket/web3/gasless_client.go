@@ -478,12 +478,11 @@ func (c *PolymarketGaslessWeb3Client) SplitPosition(conditionID common.Hash, amo
 	var err error
 
 	if negRisk {
-		to = NegRiskAdapterAddress
-		data, err = NegRiskAdapterABI.Pack("splitPosition", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)}, amountInt)
+		to = c.NegRiskCtfCollateralAdapterAddress
 	} else {
-		to = c.ConditionalTokensAddress
-		data, err = ConditionalTokensABI.Pack("splitPosition", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)}, amountInt)
+		to = c.CtfCollateralAdapterAddress
 	}
+	data, err = ConditionalTokensABI.Pack("splitPosition", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)}, amountInt)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +490,8 @@ func (c *PolymarketGaslessWeb3Client) SplitPosition(conditionID common.Hash, amo
 	return c.Execute(to, data, "Split Position", "split")
 }
 
-// MergePosition 合并两个互补头寸为USDC
+// MergePosition 合并两个互补头寸为 pUSD (V2)
+// 通过 CtfCollateralAdapter / NegRiskCtfCollateralAdapter 完成
 func (c *PolymarketGaslessWeb3Client) MergePosition(conditionID common.Hash, amount float64, negRisk bool) (*TransactionReceipt, error) {
 	amountInt := ToWei(amount, 6)
 
@@ -500,12 +500,11 @@ func (c *PolymarketGaslessWeb3Client) MergePosition(conditionID common.Hash, amo
 	var err error
 
 	if negRisk {
-		to = NegRiskAdapterAddress
-		data, err = NegRiskAdapterABI.Pack("mergePositions", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)}, amountInt)
+		to = c.NegRiskCtfCollateralAdapterAddress
 	} else {
-		to = c.ConditionalTokensAddress
-		data, err = ConditionalTokensABI.Pack("mergePositions", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)}, amountInt)
+		to = c.CtfCollateralAdapterAddress
 	}
+	data, err = ConditionalTokensABI.Pack("mergePositions", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)}, amountInt)
 	if err != nil {
 		return nil, err
 	}
@@ -513,23 +512,23 @@ func (c *PolymarketGaslessWeb3Client) MergePosition(conditionID common.Hash, amo
 	return c.Execute(to, data, "Merge Position", "merge")
 }
 
-// RedeemPosition 赎回头寸为USDC
+// RedeemPosition 赎回头寸为 pUSD (V2)
+// 通过 CtfCollateralAdapter / NegRiskCtfCollateralAdapter 完成赎回，
+// 适配器内部处理 USDC.e ↔ pUSD 转换，用户直接收到 pUSD。
 func (c *PolymarketGaslessWeb3Client) RedeemPosition(conditionID common.Hash, amounts []float64, negRisk bool) (*TransactionReceipt, error) {
 	var to common.Address
 	var data []byte
 	var err error
 
 	if negRisk {
-		to = NegRiskAdapterAddress
-		intAmounts := make([]*big.Int, len(amounts))
-		for i, amt := range amounts {
-			intAmounts[i] = ToWei(amt, 6)
-		}
-		data, err = NegRiskAdapterABI.Pack("redeemPositions", conditionID, intAmounts)
+		to = c.NegRiskCtfCollateralAdapterAddress
 	} else {
-		to = c.ConditionalTokensAddress
-		data, err = ConditionalTokensABI.Pack("redeemPositions", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)})
+		to = c.CtfCollateralAdapterAddress
 	}
+	// 两个适配器都使用相同的 CTF 风格 4 参数接口：
+	// redeemPositions(address collateral, bytes32 parent, bytes32 conditionId, uint256[] indexSets)
+	// 适配器会忽略 collateral/parent/indexSets，内部使用 USDC.e + 链上余额
+	data, err = ConditionalTokensABI.Pack("redeemPositions", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)})
 	if err != nil {
 		return nil, err
 	}
