@@ -517,22 +517,15 @@ func (c *PolymarketGaslessWeb3Client) MergePosition(conditionID common.Hash, amo
 // 适配器内部处理 USDC.e ↔ pUSD 转换，用户直接收到 pUSD。
 func (c *PolymarketGaslessWeb3Client) RedeemPosition(conditionID common.Hash, amounts []float64, negRisk bool) (*TransactionReceipt, error) {
 	var to common.Address
-	var data []byte
-	var err error
-
 	if negRisk {
 		to = c.NegRiskCtfCollateralAdapterAddress
 	} else {
 		to = c.CtfCollateralAdapterAddress
 	}
-	// 两个适配器都使用相同的 CTF 风格 4 参数接口：
-	// redeemPositions(address collateral, bytes32 parent, bytes32 conditionId, uint256[] indexSets)
-	// 适配器会忽略 collateral/parent/indexSets，内部使用 USDC.e + 链上余额
-	data, err = ConditionalTokensABI.Pack("redeemPositions", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)})
+	data, err := ConditionalTokensABI.Pack("redeemPositions", c.USDCAddress, HashZero, conditionID, []*big.Int{big.NewInt(1), big.NewInt(2)})
 	if err != nil {
 		return nil, err
 	}
-
 	return c.Execute(to, data, "Redeem Position", "redeem")
 }
 

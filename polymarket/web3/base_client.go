@@ -21,9 +21,11 @@ var (
 	AddressZero = common.HexToAddress("0x0000000000000000000000000000000000000000")
 	HashZero    = common.Hash{}
 
+	usdceAddress = common.HexToAddress("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174") // USDC.e on Polygon — CTF internal collateral
+
 	// Polygon 主网合约地址
 	NegRiskAdapterAddress               = common.HexToAddress("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296")
-	CtfCollateralAdapterAddress         = common.HexToAddress("0xADa100874d00e3331D00F2007a9c336a65009718") // V2: wraps USDC.e→pUSD
+	CtfCollateralAdapterAddress         = common.HexToAddress("0xAdA100Db00Ca00073811820692005400218FcE1f") // V2: verified from polymarket.com web UI
 	NegRiskCtfCollateralAdapterAddress  = common.HexToAddress("0xAdA200001000ef00D07553cEE7006808F895c6F1") // V2: NegRisk variant
 	ProxyFactoryAddress                 = common.HexToAddress("0xaB45c5A4B0c941a2F231C04C3f49182e1A254052")
 	SafeProxyFactoryAddress             = common.HexToAddress("0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b")
@@ -101,8 +103,8 @@ type BaseWeb3Client struct {
 	ExchangeV2Address                  common.Address // v2 exchange
 	NegRiskExchangeV2Address           common.Address // v2 neg risk exchange
 	NegRiskAdapterAddress              common.Address
-	CtfCollateralAdapterAddress        common.Address // V2: wraps USDC.e→pUSD for CTF redeem
-	NegRiskCtfCollateralAdapterAddress common.Address // V2: NegRisk variant
+	CtfCollateralAdapterAddress                common.Address // V2: wraps USDC.e→pUSD for CTF redeem
+	NegRiskCtfCollateralAdapterAddress         common.Address // V2: NegRisk variant
 	ProxyFactoryAddress                common.Address
 	SafeProxyFactoryAddress            common.Address
 }
@@ -173,8 +175,8 @@ func NewBaseWeb3Client(
 		ExchangeV2Address:         config.ExchangeV2,
 		NegRiskExchangeV2Address:  config.NegRiskExchangeV2,
 		NegRiskAdapterAddress:              NegRiskAdapterAddress,
-		CtfCollateralAdapterAddress:        CtfCollateralAdapterAddress,
-		NegRiskCtfCollateralAdapterAddress: NegRiskCtfCollateralAdapterAddress,
+		CtfCollateralAdapterAddress:                CtfCollateralAdapterAddress,
+		NegRiskCtfCollateralAdapterAddress:         NegRiskCtfCollateralAdapterAddress,
 		ProxyFactoryAddress:                ProxyFactoryAddress,
 		SafeProxyFactoryAddress:   SafeProxyFactoryAddress,
 	}
@@ -574,6 +576,8 @@ func (c *BaseWeb3Client) CheckPayoutsReported(conditionID common.Hash) (bool, er
 }
 
 // GetTokenIDForCondition 计算 conditionId + indexSet 对应的 ERC-1155 token ID
+// positionId = uint256(keccak256(abi.encodePacked(collateralToken, getCollectionId(parentCollectionId, conditionId, indexSet))))
+// CTF uses USDC.e (0x2791Bca1...) as its internal collateral, regardless of V2 adapter wrapping.
 func (c *BaseWeb3Client) GetTokenIDForCondition(conditionID common.Hash, indexSet *big.Int) (*big.Int, error) {
 	data, err := ConditionalTokensABI.Pack("getCollectionId", HashZero, conditionID, indexSet)
 	if err != nil {
@@ -587,8 +591,11 @@ func (c *BaseWeb3Client) GetTokenIDForCondition(conditionID common.Hash, indexSe
 	if err := ConditionalTokensABI.UnpackIntoInterface(&collectionID, "getCollectionId", result); err != nil {
 		return nil, fmt.Errorf("unpack getCollectionId failed: %w", err)
 	}
-	tokenID := new(big.Int).SetBytes(collectionID[:])
-	return tokenID, nil
+	packed := make([]byte, 0, 52)
+	packed = append(packed, usdceAddress.Bytes()...)
+	packed = append(packed, collectionID[:]...)
+	positionID := crypto.Keccak256Hash(packed).Big()
+	return positionID, nil
 }
 
 // GetConditionTokenBalance 获取用户在某个 condition + indexSet 下的 token 余额
