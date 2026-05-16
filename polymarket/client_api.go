@@ -38,7 +38,7 @@ func (c *ClobClient) CreateAPIKey(nonce *int) (*ApiCreds, error) {
 	if err := c.assertLevel1Auth(); err != nil {
 		return nil, err
 	}
-	headers, err := CreateLevel1Headers(c.signer, nonce)
+	headers, err := CreateLevel1Headers(c.signer, nonce, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func (c *ClobClient) DeriveAPIKey(nonce *int) (*ApiCreds, error) {
 	if err := c.assertLevel1Auth(); err != nil {
 		return nil, err
 	}
-	headers, err := CreateLevel1Headers(c.signer, nonce)
+	headers, err := CreateLevel1Headers(c.signer, nonce, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func (c *ClobClient) GetAPIKeys() (interface{}, error) {
 		return nil, err
 	}
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetAPIKeys}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func (c *ClobClient) GetClosedOnlyMode() (interface{}, error) {
 		return nil, err
 	}
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: ClosedOnly}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +133,7 @@ func (c *ClobClient) DeleteAPIKey() (interface{}, error) {
 		return nil, err
 	}
 	requestArgs := &RequestArgs{Method: "DELETE", RequestPath: DeleteAPIKey}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,8 @@ func (c *ClobClient) DeleteAPIKey() (interface{}, error) {
 
 // ---- Market data ----
 
-// GetClobMarketInfo fetches CLOB market info and caches tick_size, neg_risk, fee_info.
+// GetClobMarketInfo fetches CLOB market info and caches tick_size, neg_risk, fee_info
+// and other market details (accepting_orders, rfq_enabled, rewards, etc.).
 func (c *ClobClient) GetClobMarketInfo(conditionID string) (map[string]interface{}, error) {
 	path := GetClobMarket + conditionID
 	resp, err := c.httpClient.Get(path, nil)
@@ -171,7 +172,7 @@ func (c *ClobClient) GetClobMarketInfo(conditionID string) (map[string]interface
 				}
 				c.mu.Unlock()
 
-				// Cache fee info
+				// Cache fee info and fee rate
 				if fd, ok := respMap["fd"].(map[string]interface{}); ok {
 					feeInfo := &FeeInfo{}
 					if r, ok := fd["r"]; ok {
@@ -240,6 +241,9 @@ func (c *ClobClient) GetPrices(params []BookParams) (interface{}, error) {
 
 // GetPricesHistory 获取价格历史
 func (c *ClobClient) GetPricesHistory(params *PricesHistoryParams) (interface{}, error) {
+	if params.Interval == "" && (params.StartTs == 0 || params.EndTs == 0) {
+		return nil, fmt.Errorf("get_prices_history requires either interval or both start_ts and end_ts")
+	}
 	query := "?"
 	if params.Market != "" {
 		query += "market=" + params.Market + "&"
@@ -501,7 +505,7 @@ func (c *ClobClient) GetEarningsForUserForDay(params *EarningsParams) (interface
 		return nil, err
 	}
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetEarningsForUserForDay}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -521,7 +525,7 @@ func (c *ClobClient) GetLiquidityRewardPercentages() (interface{}, error) {
 		return nil, err
 	}
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetLiquidityRewardPercentages}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -542,7 +546,7 @@ func (c *ClobClient) CreateBuilderAPIKey() (interface{}, error) {
 		return nil, err
 	}
 	requestArgs := &RequestArgs{Method: "POST", RequestPath: CreateBuilderAPIKey}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -555,7 +559,7 @@ func (c *ClobClient) GetBuilderAPIKeys() (interface{}, error) {
 		return nil, err
 	}
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetBuilderAPIKeys}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -576,7 +580,7 @@ func (c *ClobClient) RevokeBuilderAPIKey(key string) (interface{}, error) {
 		Body:           body,
 		SerializedBody: &bodyStr,
 	}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -590,6 +594,8 @@ func (c *ClobClient) GetBuilderFeeRate(builderCode string) (interface{}, error) 
 }
 
 // ---- Helpers ----
+// Note: utilities.go also defines getString/getBool with the same signatures.
+// These are kept for backward compatibility within this package.
 
 func getStringFromMap(m map[string]interface{}, key string) string {
 	if v, ok := m[key]; ok {
@@ -606,3 +612,4 @@ func getBoolFromMap(m map[string]interface{}, key string) bool {
 	}
 	return false
 }
+

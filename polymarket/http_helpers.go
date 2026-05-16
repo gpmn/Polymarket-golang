@@ -6,15 +6,12 @@ import (
 )
 
 // BuildQueryParams 构建查询参数
+// If url already contains "?", appends "&key=value"; otherwise appends "?key=value".
 func BuildQueryParams(url, param, val string) string {
-	urlWithParams := url
-	last := urlWithParams[len(urlWithParams)-1:]
-	if last == "?" {
-		urlWithParams = fmt.Sprintf("%s%s=%s", urlWithParams, param, val)
-	} else {
-		urlWithParams = fmt.Sprintf("%s&%s=%s", urlWithParams, param, val)
+	if strings.Contains(url, "?") {
+		return fmt.Sprintf("%s&%s=%s", url, param, val)
 	}
-	return urlWithParams
+	return fmt.Sprintf("%s?%s=%s", url, param, val)
 }
 
 // AddQueryTradeParams 添加交易查询参数

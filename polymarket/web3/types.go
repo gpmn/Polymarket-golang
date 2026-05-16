@@ -17,6 +17,8 @@ const (
 	SignatureTypePolyProxy SignatureType = 1
 	// SignatureTypeSafe Safe/Gnosis钱包 (2)
 	SignatureTypeSafe SignatureType = 2
+	// SignatureTypePoly1271 Deposit Wallet / EIP-1271 (3)
+	SignatureTypePoly1271 SignatureType = 3
 )
 
 // TransactionReceipt 交易回执

@@ -26,7 +26,7 @@ var (
 	// Polygon 主网合约地址
 	NegRiskAdapterAddress               = common.HexToAddress("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296")
 	CtfCollateralAdapterAddress         = common.HexToAddress("0xAdA100Db00Ca00073811820692005400218FcE1f") // V2: verified from polymarket.com web UI
-	NegRiskCtfCollateralAdapterAddress  = common.HexToAddress("0xAdA200001000ef00D07553cEE7006808F895c6F1") // V2: NegRisk variant
+		NegRiskCtfCollateralAdapterAddress  = common.HexToAddress("0xAdA200001000ef00D07553cEE7006808F895c6F1") // V2: NegRisk variant
 	ProxyFactoryAddress                 = common.HexToAddress("0xaB45c5A4B0c941a2F231C04C3f49182e1A254052")
 	SafeProxyFactoryAddress             = common.HexToAddress("0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b")
 
@@ -206,6 +206,9 @@ func (c *BaseWeb3Client) setupAddress() error {
 			return err
 		}
 		c.Address = addr
+	case SignatureTypePoly1271:
+		// Deposit Wallet 地址由外部配置传入，创建后需要手动覆盖 c.Address
+		c.Address = c.account
 	default:
 		return fmt.Errorf("invalid signature type: %d", c.signatureType)
 	}

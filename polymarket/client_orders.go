@@ -47,7 +47,7 @@ func (c *ClobClient) PostOrderWithOptions(order interface{}, orderType OrderType
 		SerializedBody: &bodyStr,
 	}
 
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +99,7 @@ func (c *ClobClient) PostOrders(args []PostOrderArgs) (*PostOrdersResult, error)
 		SerializedBody: &bodyStr,
 	}
 
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func (c *ClobClient) Cancel(orderID string) (interface{}, error) {
 		SerializedBody: &bodyStr,
 	}
 
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +159,7 @@ func (c *ClobClient) CancelOrders(orderHashes []string) (interface{}, error) {
 		SerializedBody: &bodyStr,
 	}
 
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +174,7 @@ func (c *ClobClient) CancelAll() (interface{}, error) {
 	}
 
 	requestArgs := &RequestArgs{Method: "DELETE", RequestPath: CancelAll}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +209,7 @@ func (c *ClobClient) CancelMarketOrders(params *OrderMarketCancelParams) (interf
 		SerializedBody: &bodyStr,
 	}
 
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func (c *ClobClient) GetOrders(params *OpenOrderParams, nextCursor string) ([]in
 	}
 
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: Orders}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +271,7 @@ func (c *ClobClient) GetPreMigrationOrders(nextCursor string) ([]interface{}, er
 	}
 
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: PreMigrationOrders}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +308,7 @@ func (c *ClobClient) GetOrder(orderID string) (interface{}, error) {
 
 	endpoint := GetOrder + orderID
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: endpoint}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +327,7 @@ func (c *ClobClient) GetTrades(params *TradeParams, nextCursor string) ([]interf
 	}
 
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: Trades}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -377,7 +377,7 @@ func (c *ClobClient) GetBalanceAllowance(params *BalanceAllowanceParams) (map[st
 
 	url := AddBalanceAllowanceParamsToURL(c.host+GetBalanceAllowance, params)
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetBalanceAllowance}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +408,7 @@ func (c *ClobClient) GetNotifications() (interface{}, error) {
 
 	url := fmt.Sprintf("%s?signature_type=%d", GetNotifications, sigType)
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetNotifications}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +424,7 @@ func (c *ClobClient) DropNotifications(params *DropNotificationParams) (interfac
 
 	url := DropNotificationsQueryParams(c.host+DropNotifications, params)
 	requestArgs := &RequestArgs{Method: "DELETE", RequestPath: DropNotifications}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}

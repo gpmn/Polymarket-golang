@@ -35,13 +35,14 @@ type BookParams struct {
 
 // OrderArgs 限价订单参数 (v2, default)
 type OrderArgs struct {
-	TokenID     string  `json:"token_id"`     // 条件代币资产ID
-	Price       float64 `json:"price"`        // 订单价格
-	Size        float64 `json:"size"`         // 条件代币数量
-	Side        string  `json:"side"`         // BUY 或 SELL
-	Expiration  int     `json:"expiration"`   // 订单过期时间戳, 0 = 无过期
-	BuilderCode string  `json:"builder_code,omitempty"` // Builder code (bytes32) for fee attribution
-	Metadata    string  `json:"metadata,omitempty"`     // Optional metadata (bytes32)
+	TokenID         string  `json:"token_id"`     // 条件代币资产ID
+	Price           float64 `json:"price"`        // 订单价格
+	Size            float64 `json:"size"`         // 条件代币数量
+	Side            string  `json:"side"`         // BUY 或 SELL
+	Expiration      int     `json:"expiration"`   // 订单过期时间戳, 0 = 无过期
+	BuilderCode     string  `json:"builder_code,omitempty"` // Builder code (bytes32) for fee attribution
+	Metadata        string  `json:"metadata,omitempty"`     // Optional metadata (bytes32)
+	UserUSDCBalance float64 `json:"user_usdc_balance,omitempty"` // 用户pUSD余额, 用于BUY时自动调整订单金额
 }
 
 // OrderArgsV1 限价订单参数 (v1 legacy)
@@ -164,6 +165,8 @@ type PartialCreateOrderOptions struct {
 	TickSize  *TickSize  `json:"tick_size,omitempty"`
 	NegRisk   *bool      `json:"neg_risk,omitempty"`
 	OrderType *OrderType `json:"order_type,omitempty"`
+	PostOnly  *bool      `json:"post_only,omitempty"`
+	DeferExec *bool      `json:"defer_exec,omitempty"`
 }
 
 // RoundConfig 舍入配置
@@ -262,8 +265,45 @@ type FeeInfo struct {
 
 // FeeDetails 平台费用详情
 type FeeDetails struct {
-	Rate     int `json:"rate"`     // fee rate in bps
-	Exponent int `json:"exponent"` // fee exponent
+	Rate     float64 `json:"rate"`     // fee rate (e.g. 0.05 for 5%), matching py-clob-client-v2
+	Exponent int     `json:"exponent"` // fee exponent
+	TakerOnly bool   `json:"taker_only,omitempty"` // if true, fee applies to takers only
+}
+
+// ClobToken represents a YES or NO token in a CLOB market.
+type ClobToken struct {
+	TokenID string `json:"token_id"`
+	Outcome string `json:"outcome"`
+}
+
+// ClobRewards represents rewards configuration for a market.
+type ClobRewards struct {
+	MinSize           *float64 `json:"min_size,omitempty"`
+	MaxSpread         *float64 `json:"max_spread,omitempty"`
+	Enabled           *bool    `json:"enabled,omitempty"`
+	SkipMinOrderAge   *bool    `json:"skip_min_order_age,omitempty"`
+	MinOrderAgeSeconds *int    `json:"min_order_age_seconds,omitempty"`
+}
+
+// MarketDetails represents cached market details from the CLOB API.
+type MarketDetails struct {
+	ConditionID          string       `json:"condition_id"`
+	Tokens               []ClobToken  `json:"tokens,omitempty"`
+	MinTickSize          *float64     `json:"min_tick_size,omitempty"`
+	NegRisk              *bool        `json:"neg_risk,omitempty"`
+	FeeDetails           *FeeDetails  `json:"fee_details,omitempty"`
+	MakerBaseFee         *int         `json:"maker_base_fee,omitempty"`
+	TakerBaseFee         *int         `json:"taker_base_fee,omitempty"`
+	Rewards              *ClobRewards `json:"rewards,omitempty"`
+	AcceptingOrders      *bool        `json:"accepting_orders,omitempty"`
+	MinOrderSize         *float64     `json:"min_order_size,omitempty"`
+	SecondsDelay         *int         `json:"seconds_delay,omitempty"`
+	GameStartTime        *string      `json:"game_start_time,omitempty"`
+	ClearBookOnStart     *bool        `json:"clear_book_on_start,omitempty"`
+	AcceptingOrdersTimestamp *string  `json:"accepting_orders_timestamp,omitempty"`
+	RfqEnabled           *bool        `json:"rfq_enabled,omitempty"`
+	TakerOrderDelayEnabled *bool      `json:"taker_order_delay_enabled,omitempty"`
+	BlockaidCheckEnabled *bool        `json:"blockaid_check_enabled,omitempty"`
 }
 
 // BuilderFeeRate builder的maker/taker费率
@@ -282,6 +322,17 @@ type BuilderTradeParams struct {
 	Before       string `json:"before,omitempty"`
 	After        string `json:"after,omitempty"`
 }
+
+// PriceHistoryInterval 价格历史查询的间隔类型
+type PriceHistoryInterval string
+
+const (
+	PriceHistoryMax      PriceHistoryInterval = "max"
+	PriceHistoryOneWeek  PriceHistoryInterval = "1w"
+	PriceHistoryOneDay   PriceHistoryInterval = "1d"
+	PriceHistorySixHours PriceHistoryInterval = "6h"
+	PriceHistoryOneHour  PriceHistoryInterval = "1h"
+)
 
 // PricesHistoryParams 价格历史查询参数
 type PricesHistoryParams struct {

@@ -398,7 +398,7 @@ func (c *PolymarketGaslessWeb3Client) getRelayHeaders(body *RelaySubmitRequest) 
 		Body:        body,
 	}
 
-	headers, err := polymarket.CreateBuilderHeaders(c.builderCreds, requestArgs)
+	headers, err := polymarket.CreateBuilderHeaders(c.builderCreds, requestArgs, 0)
 	if err != nil {
 		return nil, err
 	}

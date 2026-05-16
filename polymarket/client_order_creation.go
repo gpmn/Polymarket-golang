@@ -77,13 +77,10 @@ func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrd
 		return nil, fmt.Errorf("unsupported tick size: %s", tickSize)
 	}
 
-	// Compute order amounts
-	side, makerAmount, takerAmount, err := c.builder.GetOrderAmounts(orderArgs.Side, orderArgs.Size, orderArgs.Price, roundConfig)
-	if err != nil {
-		return nil, err
-	}
+	// Round price to tick size (ensures fee adjustment uses the same price as order building)
+	roundedPrice := obuilder.RoundNormal(orderArgs.Price, roundConfig.Price)
 
-	// Apply builder code
+	// Apply builder code and metadata early (needed for fee adjustment)
 	builderCode := orderArgs.BuilderCode
 	if builderCode == "" || builderCode == BYTES32_ZERO {
 		if c.builderConfig != nil && c.builderConfig.BuilderCode != "" {
@@ -106,6 +103,19 @@ func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrd
 
 	version := c.resolveVersion()
 
+	// Compute order amounts (with fee adjustment for v2 BUY orders when balance is provided)
+	size := orderArgs.Size
+	if version >= 2 && orderArgs.Side == BUY && orderArgs.UserUSDCBalance > 0 {
+		notional := size * roundedPrice
+		adjustedNotional := c.adjustBuyAmountForBalance(tokenID, notional, roundedPrice, orderArgs.UserUSDCBalance, builderCode)
+		size = adjustedNotional / roundedPrice
+	}
+
+	side, makerAmount, takerAmount, err := c.builder.GetOrderAmounts(orderArgs.Side, size, roundedPrice, roundConfig)
+	if err != nil {
+		return nil, err
+	}
+
 	if version >= 2 {
 		// Build v2 order
 		sideVal := 0
@@ -119,7 +129,7 @@ func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrd
 		orderData := &obuilder.SignedOrderV2Data{
 			Salt:          saltStr,
 			Maker:         c.builder.GetFunder(),
-			Signer:        c.signer.Address(),
+			Signer:        c.builder.GetV2OrderSigner(),
 			TokenId:       tokenID,
 			MakerAmount:   makerAmount.String(),
 			TakerAmount:   takerAmount.String(),
@@ -184,7 +194,7 @@ func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrd
 		Side:          side,
 		FeeRateBps:    strconv.Itoa(feeRateBps),
 		Nonce:         strconv.Itoa(orderArgs.Nonce()),
-		Signer:        c.signer.Address(),
+		Signer:        c.signer.Address(), // V1 fallback（死代码，服务器版本≥2 走 V2 路径，不执行此代码）
 		Expiration:    expiration,
 		SignatureType: model.SignatureType(c.builder.GetSigType()),
 	}
@@ -251,13 +261,7 @@ func (c *ClobClient) CreateMarketOrder(orderArgs *MarketOrderArgs, options *Part
 		return nil, fmt.Errorf("unsupported tick size: %s", tickSize)
 	}
 
-	// Compute order amounts (v2 uses round_down for price in market orders)
-	side, makerAmount, takerAmount, err := c.builder.GetMarketOrderAmounts(orderArgs.Side, orderArgs.Amount, orderArgs.Price, roundConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	// Apply builder code
+	// Apply builder code and metadata early (needed for fee adjustment)
 	builderCode := orderArgs.BuilderCode
 	if builderCode == "" || builderCode == BYTES32_ZERO {
 		if c.builderConfig != nil && c.builderConfig.BuilderCode != "" {
@@ -275,6 +279,22 @@ func (c *ClobClient) CreateMarketOrder(orderArgs *MarketOrderArgs, options *Part
 
 	version := c.resolveVersion()
 
+	// Round price using RoundDown for market orders (matching py-clob-client-v2 behavior)
+	rawPrice := obuilder.RoundDown(orderArgs.Price, roundConfig.Price)
+
+	// Compute order amounts (v2 uses round_down for price in market orders)
+	// Fee adjustment for v2 BUY orders when balance is provided
+	// Use rounded price for fee calculation to match Python SDK v1.0.1 behavior
+	amount := orderArgs.Amount
+	if version >= 2 && orderArgs.Side == BUY && orderArgs.UserUSDCBalance > 0 {
+		amount = c.adjustBuyAmountForBalance(tokenID, amount, rawPrice, orderArgs.UserUSDCBalance, builderCode)
+	}
+
+	side, makerAmount, takerAmount, err := c.builder.GetMarketOrderAmounts(orderArgs.Side, amount, rawPrice, roundConfig)
+	if err != nil {
+		return nil, err
+	}
+
 	if version >= 2 {
 		sideVal := 0
 		if side == model.SELL {
@@ -287,7 +307,7 @@ func (c *ClobClient) CreateMarketOrder(orderArgs *MarketOrderArgs, options *Part
 		orderData := &obuilder.SignedOrderV2Data{
 			Salt:          saltStr,
 			Maker:         c.builder.GetFunder(),
-			Signer:        c.signer.Address(),
+			Signer:        c.builder.GetV2OrderSigner(),
 			TokenId:       tokenID,
 			MakerAmount:   makerAmount.String(),
 			TakerAmount:   takerAmount.String(),
@@ -351,7 +371,7 @@ func (c *ClobClient) CreateMarketOrder(orderArgs *MarketOrderArgs, options *Part
 		Side:          side,
 		FeeRateBps:    strconv.Itoa(feeRateBps),
 		Nonce:         strconv.Itoa(orderArgs.Nonce()),
-		Signer:        c.signer.Address(),
+		Signer:        c.signer.Address(), // V1 fallback（死代码，服务器版本≥2 走 V2 路径，不执行此代码）
 		Expiration:    "0",
 		SignatureType: model.SignatureType(c.builder.GetSigType()),
 	}
@@ -379,10 +399,21 @@ func (c *ClobClient) CreateAndPostOrder(orderArgs *OrderArgs, options *PartialCr
 		orderType = *options.OrderType
 	}
 
-	return c.PostOrder(order, orderType)
+	postOnly := false
+	if options != nil && options.PostOnly != nil {
+		postOnly = *options.PostOnly
+	}
+
+	deferExec := false
+	if options != nil && options.DeferExec != nil {
+		deferExec = *options.DeferExec
+	}
+
+	return c.PostOrderWithOptions(order, orderType, postOnly, deferExec)
 }
 
 // CreateAndPostMarketOrder creates and posts a market order.
+// Note: post_only is not supported for market orders (FOK/FAK), so it is always false.
 func (c *ClobClient) CreateAndPostMarketOrder(orderArgs *MarketOrderArgs, options *PartialCreateOrderOptions) (*PostOrderResult, error) {
 	order, err := c.CreateMarketOrder(orderArgs, options)
 	if err != nil {
@@ -394,7 +425,12 @@ func (c *ClobClient) CreateAndPostMarketOrder(orderArgs *MarketOrderArgs, option
 		orderType = *options.OrderType
 	}
 
-	return c.PostOrder(order, orderType)
+	deferExec := false
+	if options != nil && options.DeferExec != nil {
+		deferExec = *options.DeferExec
+	}
+
+	return c.PostOrderWithOptions(order, orderType, false, deferExec)
 }
 
 // CalculateMarketPrice computes the market price from the order book.

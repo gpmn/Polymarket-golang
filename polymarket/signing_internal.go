@@ -115,19 +115,17 @@ func BuildHMACSignature(secret string, timestamp int, method string, requestPath
 	message := strconv.Itoa(timestamp) + method + requestPath
 	if body != nil {
 		// 将body转换为JSON字符串
-		// 注意：必须使用带空格的JSON格式，否则API会返回401错误
-		// 参考: https://github.com/Polymarket/py-clob-client/issues/164
+		// 注意：必须使用紧凑JSON格式（无空格），否则API会返回401错误
 		var bodyStr string
 		if bodyStrPtr, ok := body.(*string); ok {
 			// 如果已经是字符串指针，直接使用
 			bodyStr = *bodyStrPtr
 		} else if bodyStrVal, ok := body.(string); ok {
 			// 如果已经是字符串，直接使用
-			bodyStr = bodyStrVal
+			// 匹配 Python SDK 的 build_hmac_signature 行为: str(body).replace("'", '"')
+			bodyStr = strings.ReplaceAll(bodyStrVal, "'", "\"")
 		} else {
 			// 序列化为JSON（紧凑格式，无空格）
-			// 参考: https://github.com/Polymarket/py-clob-client/issues/164
-			// API要求JSON必须去掉所有空格，否则会返回401错误
 			bodyBytes, err := json.Marshal(body)
 			if err != nil {
 				return "", fmt.Errorf("failed to marshal body for HMAC signing: %w", err)
@@ -147,8 +145,11 @@ func BuildHMACSignature(secret string, timestamp int, method string, requestPath
 }
 
 // CreateLevel1Headers 创建L1认证头
-func CreateLevel1Headers(signer *Signer, nonce *int) (map[string]string, error) {
-	timestamp := int(time.Now().Unix())
+// timestamp <= 0 时使用本地系统时间。
+func CreateLevel1Headers(signer *Signer, nonce *int, timestamp int) (map[string]string, error) {
+	if timestamp <= 0 {
+		timestamp = int(time.Now().Unix())
+	}
 
 	n := 0
 	if nonce != nil {
@@ -183,8 +184,11 @@ func CreateLevel1Headers(signer *Signer, nonce *int) (map[string]string, error) 
 }
 
 // CreateLevel2Headers 创建L2认证头
-func CreateLevel2Headers(signer *Signer, creds *ApiCreds, requestArgs *RequestArgs) (map[string]string, error) {
-	timestamp := int(time.Now().Unix())
+// timestamp <= 0 时使用本地系统时间。
+func CreateLevel2Headers(signer *Signer, creds *ApiCreds, requestArgs *RequestArgs, timestamp int) (map[string]string, error) {
+	if timestamp <= 0 {
+		timestamp = int(time.Now().Unix())
+	}
 
 	// 优先使用预序列化的body
 	var bodyForSig interface{}
@@ -223,8 +227,11 @@ const (
 )
 
 // CreateBuilderHeaders 创建 Builder 认证头（用于 Gasless 交易）
-func CreateBuilderHeaders(creds *ApiCreds, requestArgs *RequestArgs) (map[string]string, error) {
-	timestamp := int(time.Now().Unix())
+// timestamp <= 0 时使用本地系统时间。
+func CreateBuilderHeaders(creds *ApiCreds, requestArgs *RequestArgs, timestamp int) (map[string]string, error) {
+	if timestamp <= 0 {
+		timestamp = int(time.Now().Unix())
+	}
 
 	// 优先使用预序列化的body
 	var bodyForSig interface{}

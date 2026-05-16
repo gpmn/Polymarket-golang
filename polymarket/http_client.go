@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
 // HTTPClient HTTP客户端
 type HTTPClient struct {
-	client  *http.Client
-	baseURL string
+	client       *http.Client
+	baseURL      string
+	retryOnError bool
 }
 
 // NewHTTPClient 创建新的HTTP客户端
@@ -23,6 +25,36 @@ func NewHTTPClient(baseURL string) *HTTPClient {
 		},
 		baseURL: baseURL,
 	}
+}
+
+// SetRetryOnError enables/disables one-time retry on transient POST errors (5xx, network).
+func (c *HTTPClient) SetRetryOnError(retry bool) {
+	c.retryOnError = retry
+}
+
+// RetryOnError returns whether retry-on-error is enabled.
+func (c *HTTPClient) RetryOnError() bool {
+	return c.retryOnError
+}
+
+// isRetryableError checks if an error is likely transient and worth retrying once.
+func (c *HTTPClient) isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// 5xx responses
+	if strings.Contains(errStr, "status 5") {
+		return true
+	}
+	// Network-level errors
+	if strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "temporary") {
+		return true
+	}
+	return false
 }
 
 // Request 发送HTTP请求
@@ -93,9 +125,13 @@ func (c *HTTPClient) Get(path string, headers map[string]string) (interface{}, e
 	return c.Request("GET", path, headers, nil)
 }
 
-// Post 发送POST请求
+// Post 发送POST请求（支持retry_on_error时自动重试一次）
 func (c *HTTPClient) Post(path string, headers map[string]string, body interface{}) (interface{}, error) {
-	return c.Request("POST", path, headers, body)
+	result, err := c.Request("POST", path, headers, body)
+	if err != nil && c.retryOnError && c.isRetryableError(err) {
+		result, err = c.Request("POST", path, headers, body)
+	}
+	return result, err
 }
 
 // Delete 发送DELETE请求

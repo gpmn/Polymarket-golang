@@ -11,7 +11,7 @@ func (c *ClobClient) CreateReadonlyAPIKey() (*ReadonlyApiKeyResponse, error) {
 		return nil, err
 	}
 	requestArgs := &RequestArgs{Method: "POST", RequestPath: CreateReadonlyAPIKey}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ func (c *ClobClient) GetReadonlyAPIKeys() (interface{}, error) {
 		return nil, err
 	}
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetReadonlyAPIKeys}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func (c *ClobClient) DeleteReadonlyAPIKey(key string) (interface{}, error) {
 		Body:           body,
 		SerializedBody: &bodyStr,
 	}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +72,7 @@ func (c *ClobClient) IsOrderScoring(params *OrderScoringParams) (interface{}, er
 	}
 	url := AddOrderScoringParamsToURL(c.host+IsOrderScoring, params)
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: IsOrderScoring}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (c *ClobClient) AreOrdersScoring(params *OrdersScoringParams) (interface{},
 		Body:           params.OrderIDs,
 		SerializedBody: &bodyStr,
 	}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +166,7 @@ func (c *ClobClient) UpdateBalanceAllowance(params *BalanceAllowanceParams) (int
 	}
 	url := AddBalanceAllowanceParamsToURL(c.host+UpdateBalanceAllowance, params)
 	requestArgs := &RequestArgs{Method: "GET", RequestPath: UpdateBalanceAllowance}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}
@@ -179,17 +179,13 @@ func (c *ClobClient) GetOrderBookHash(orderbook *OrderBookSummary) string {
 }
 
 // GetBuilderTrades fetches builder trade records.
+// Note: this endpoint does not require authentication.
 func (c *ClobClient) GetBuilderTrades(params *BuilderTradeParams, nextCursor string) ([]interface{}, error) {
-	if err := c.assertLevel2Auth(); err != nil {
-		return nil, err
+	if params.BuilderCode == "" || params.BuilderCode == BYTES32_ZERO {
+		return nil, fmt.Errorf("builder_code is required and cannot be zero")
 	}
 	if nextCursor == "" {
 		nextCursor = INITIAL_CURSOR
-	}
-	requestArgs := &RequestArgs{Method: "GET", RequestPath: GetBuilderTrades}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
-	if err != nil {
-		return nil, err
 	}
 
 	var results []interface{}
@@ -207,7 +203,7 @@ func (c *ClobClient) GetBuilderTrades(params *BuilderTradeParams, nextCursor str
 		if params.MakerAddress != "" {
 			url += "&maker_address=" + params.MakerAddress
 		}
-		resp, err := c.httpClient.Get(url[len(c.host):], headers)
+		resp, err := c.httpClient.Get(url[len(c.host):], nil)
 		if err != nil {
 			return nil, err
 		}
@@ -245,7 +241,7 @@ func (c *ClobClient) PostHeartbeat(heartbeatID *string) (interface{}, error) {
 		Body:           body,
 		SerializedBody: &bodyStr,
 	}
-	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	headers, err := CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 	if err != nil {
 		return nil, err
 	}

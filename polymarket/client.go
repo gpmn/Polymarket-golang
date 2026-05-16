@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	obuilder "github.com/0xNetuser/Polymarket-golang/polymarket/order_builder"
 	"github.com/0xNetuser/Polymarket-golang/polymarket/rfq"
@@ -36,6 +37,12 @@ type ClobClient struct {
 
 	// RFQ客户端
 	rfq *rfq.RfqClient
+
+	// Fee slippage configuration (0 = no slippage buffer)
+	feeSlippage float64
+
+	// Use server time for authentication headers instead of local time
+	useServerTime bool
 
 	mu sync.RWMutex
 }
@@ -157,6 +164,127 @@ func (c *ClobClient) SetBuilderConfig(cfg *BuilderConfig) {
 // GetBuilderConfig returns the builder configuration.
 func (c *ClobClient) GetBuilderConfig() *BuilderConfig {
 	return c.builderConfig
+}
+
+// SetFeeSlippage sets the fee slippage percentage (0 or between 1 and 100).
+func (c *ClobClient) SetFeeSlippage(feeSlippage float64) error {
+	if err := validateFeeSlippage(feeSlippage); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.feeSlippage = feeSlippage
+	c.mu.Unlock()
+	return nil
+}
+
+// GetFeeSlippage returns the current fee slippage percentage.
+func (c *ClobClient) GetFeeSlippage() float64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.feeSlippage
+}
+
+// SetUseServerTime enables/disables using the server's time for authentication headers.
+func (c *ClobClient) SetUseServerTime(use bool) {
+	c.mu.Lock()
+	c.useServerTime = use
+	c.mu.Unlock()
+}
+
+// UseServerTime returns whether the client uses server time for authentication.
+func (c *ClobClient) UseServerTime() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.useServerTime
+}
+
+// SetRetryOnError enables/disables one-time retry on transient POST errors.
+func (c *ClobClient) SetRetryOnError(retry bool) {
+	c.httpClient.SetRetryOnError(retry)
+}
+
+// RetryOnError returns whether retry-on-error is enabled.
+func (c *ClobClient) RetryOnError() bool {
+	return c.httpClient.RetryOnError()
+}
+
+// getTimestamp returns the timestamp to use for authentication.
+// If useServerTime is enabled, it fetches from the server's /time endpoint.
+// Falls back to local time on failure.
+func (c *ClobClient) getTimestamp() int {
+	c.mu.RLock()
+	useServer := c.useServerTime
+	c.mu.RUnlock()
+
+	if !useServer {
+		return int(time.Now().Unix())
+	}
+
+	result, err := c.httpClient.Get(Time, nil)
+	if err != nil {
+		return int(time.Now().Unix())
+	}
+	if respMap, ok := result.(map[string]interface{}); ok {
+		if t, ok := respMap["time"].(float64); ok {
+			return int(t)
+		}
+		if t, ok := respMap["timestamp"].(float64); ok {
+			return int(t)
+		}
+	}
+	return int(time.Now().Unix())
+}
+
+// ensureBuilderFeeRateCached fetches and caches the builder fee rate if not already cached.
+func (c *ClobClient) ensureBuilderFeeRateCached(builderCode string) {
+	if builderCode == "" || builderCode == BYTES32_ZERO {
+		return
+	}
+	c.mu.RLock()
+	_, ok := c.builderFeeRates[builderCode]
+	c.mu.RUnlock()
+	if ok {
+		return
+	}
+
+	resp, err := c.GetBuilderFeeRate(builderCode)
+	if err != nil {
+		return
+	}
+	if respMap, ok := resp.(map[string]interface{}); ok {
+		rate := &BuilderFeeRate{}
+		if m, ok := respMap["maker"].(float64); ok {
+			rate.Maker = m
+		}
+		if t, ok := respMap["taker"].(float64); ok {
+			rate.Taker = t
+		}
+		c.mu.Lock()
+		c.builderFeeRates[builderCode] = rate
+		c.mu.Unlock()
+	}
+}
+
+// adjustBuyAmountForBalance calculates the fee-adjusted amount for a BUY order.
+// It uses cached fee info and builder fee rates. If insufficient balance, the amount is reduced.
+func (c *ClobClient) adjustBuyAmountForBalance(tokenID string, amount, price, userUSDCBalance float64, builderCode string) float64 {
+	c.ensureBuilderFeeRateCached(builderCode)
+
+	builderTakerFeeRate := 0.0
+	c.mu.RLock()
+	if rate, ok := c.builderFeeRates[builderCode]; ok {
+		builderTakerFeeRate = rate.Taker
+	}
+	c.mu.RUnlock()
+
+	fi := &FeeInfo{}
+	c.mu.RLock()
+	if info, ok := c.feeInfos[tokenID]; ok {
+		fi = info
+	}
+	c.mu.RUnlock()
+
+	return AdjustBuyAmountForFees(amount, price, userUSDCBalance, fi.Rate, fi.Exponent, builderTakerFeeRate, c.feeSlippage)
 }
 
 // GetBuilder returns the order builder.
@@ -284,7 +412,7 @@ func (c *ClobClient) CreateLevel2HeadersInternal(method, path string, body inter
 		SerializedBody: &bodyStr,
 	}
 
-	return CreateLevel2Headers(c.signer, c.creds, requestArgs)
+	return CreateLevel2Headers(c.signer, c.creds, requestArgs, c.getTimestamp())
 }
 
 // GetHost 获取host（供RFQ客户端使用）
