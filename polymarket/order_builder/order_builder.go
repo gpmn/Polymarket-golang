@@ -375,6 +375,7 @@ func (ob *OrderBuilder) BuildSignedOrderV2(orderData *SignedOrderV2Data, exchang
 
 // buildSignedOrderV2Poly1271 builds and signs a v2 order for POLY_1271 (Deposit Wallet).
 // Uses Solady TypedDataSign wrapping over standard EIP-712 Order signature.
+// signer=EOA（与 API key owner 一致），maker=deposit wallet（EIP-1271 验证合约）。
 func (ob *OrderBuilder) buildSignedOrderV2Poly1271(orderData *SignedOrderV2Data, exchangeAddr string) (*SignedOrderV2Data, error) {
 	chainID := big.NewInt(int64(ob.signer.GetChainID()))
 	verifyingContract := common.HexToAddress(exchangeAddr)
@@ -507,11 +508,11 @@ func (ob *OrderBuilder) GetFunder() string { return ob.funder }
 func (ob *OrderBuilder) GetSigner() Signer { return ob.signer }
 
 // GetV2OrderSigner returns the signer address for v2 orders.
-// For POLY_1271 (deposit wallet), the signer is the funder (deposit wallet address).
+// The signer must always be the EOA address because:
+//   - API Key derives from EOA (L1 auth), server validates signer == API key owner
+//   - maker (funder) can be deposit wallet for type=3, but signer stays EOA
+//   - for type=3, maker=EIP-1271 contract (deposit wallet), signer=EOA
 func (ob *OrderBuilder) GetV2OrderSigner() string {
-	if ob.sigType == 3 {
-		return ob.funder
-	}
 	return ob.signer.Address()
 }
 
