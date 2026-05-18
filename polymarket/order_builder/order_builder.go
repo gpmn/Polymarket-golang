@@ -508,11 +508,14 @@ func (ob *OrderBuilder) GetFunder() string { return ob.funder }
 func (ob *OrderBuilder) GetSigner() Signer { return ob.signer }
 
 // GetV2OrderSigner returns the signer address for v2 orders.
-// The signer must always be the EOA address because:
-//   - API Key derives from EOA (L1 auth), server validates signer == API key owner
-//   - maker (funder) can be deposit wallet for type=3, but signer stays EOA
-//   - for type=3, maker=EIP-1271 contract (deposit wallet), signer=EOA
+// For POLY_1271 (deposit wallet), the signer is the funder (deposit wallet address).
+//   - maker = deposit wallet address
+//   - signer = deposit wallet address  (必须和 maker 一致，否则 API 报错: "signer must be the address of the API KEY")
+//   - owner = CLOB_API_KEY（API Key 的 owner 就是 deposit wallet 地址）
 func (ob *OrderBuilder) GetV2OrderSigner() string {
+	if ob.sigType == 3 {
+		return ob.funder
+	}
 	return ob.signer.Address()
 }
 
