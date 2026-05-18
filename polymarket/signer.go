@@ -10,10 +10,9 @@ import (
 
 // Signer 签名器
 type Signer struct {
-	privateKey      *ecdsa.PrivateKey
-	chainID         int
-	address         string // EOA 地址，由私钥推导
-	addressOverride string // 地址覆盖（用于 signatureType=3 POLY_1271）
+	privateKey *ecdsa.PrivateKey
+	chainID    int
+	address    string // EOA 地址，由私钥推导
 }
 
 // NewSigner 创建新的签名器
@@ -47,24 +46,13 @@ func NewSigner(privateKeyHex string, chainID int) (*Signer, error) {
 	}, nil
 }
 
-// Address 返回签名器的地址
-// 如果设置了 addressOverride（如 type=3 POLY_1271），返回覆盖地址，
-// 否则返回 EOA 地址。
-// 对于 type=3，POLY_ADDRESS header 必须用 deposit wallet 地址，
-// 因为 API Key 的 owner 是 deposit wallet 地址，而非 EOA 地址。
+// Address 返回签名器的地址（始终是 EOA 地址）
+// L1/L2 认证（POLY_ADDRESS header）始终使用 EOA 地址。
+// API Key owner = EOA（所有 signature_type 都如此，包括 type=3 POLY_1271）。
 func (s *Signer) Address() string {
-	if s.addressOverride != "" {
-		return s.addressOverride
-	}
 	return s.address
 }
 
-// SetAddressOverride 设置地址覆盖
-// 用于 signatureType=3 (POLY_1271) 场景，将地址设为 deposit wallet 地址，
-// 使得 CreateLevel1Headers/CreateLevel2Headers 中的 POLY_ADDRESS 与订单 signer 一致。
-func (s *Signer) SetAddressOverride(addr string) {
-	s.addressOverride = addr
-}
 
 // GetChainID 返回链ID
 func (s *Signer) GetChainID() int {

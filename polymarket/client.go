@@ -121,24 +121,6 @@ func (c *ClobClient) GetAddress() string {
 	return c.signer.Address()
 }
 
-// SetSignerAddressOverride 设置签名器的地址覆盖
-// 用于 signatureType=3 (POLY_1271) 场景，将 Signer.Address() 返回 deposit wallet 地址。
-// 影响：CreateLevel1Headers/CreateLevel2Headers 的 POLY_ADDRESS header。
-// 不影响：Signer 的私钥签名（签名仍然使用 EOA 私钥）。
-func (c *ClobClient) SetSignerAddressOverride(addr string) {
-	if c.signer != nil {
-		c.signer.SetAddressOverride(addr)
-	}
-	if c.builder != nil {
-		// 同时更新 builder 的 funder 以保持一致
-		// 通过重新创建 builder 实现（保持 sigType 不变）
-		builder, err := obuilder.NewOrderBuilder(c.signer, c.builder.GetSigType(), addr)
-		if err == nil {
-			c.builder = builder
-		}
-	}
-}
-
 // GetCollateralAddress 返回抵押品代币地址
 func (c *ClobClient) GetCollateralAddress() string {
 	config := getContractConfig(c.chainID)
